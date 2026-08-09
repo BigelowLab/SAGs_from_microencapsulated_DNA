@@ -23,6 +23,8 @@ params.assembly_lefttrim = '200'
 
 //#     DECONTAMINATION
 params.contam_ref_fasta = "/Users/greggavelis/Desktop/SCGC_Refcontam/GRCh38_AG665_mm10.fa"
+params.contam_min_length=100 // for BLASTn on contigs
+params.contam_min_percid=95.0 // for BLASTn on contigs
 // BWA Index is auto-detected next to contam_ref_fasta (<contam_ref_fasta>.amb/.ann/.bwt/.pac/.sa);
 // BWA_INDEX only runs when one or more of those files is missing.
 
@@ -45,16 +47,16 @@ workflow {
     def COUNT_HEADER = "Metric,Count,Sample_ID\n"
 
     FASTQC_v0_11_9(CH_fastq)
-    CH_count_raw_reads = FASTQC_v0_11_9.out.countfile.collectFile(name: '1_raw_readcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER)
+    CH_count_raw_reads = FASTQC_v0_11_9.out.countfile.collectFile(name: '1_raw_readcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false)
 
     TRIMMOMATIC_v0_32(CH_fastq)
-    CH_count_trimmed_reads = TRIMMOMATIC_v0_32.out.countfile.collectFile(name: '2_trimmed_readcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER)
+    CH_count_trimmed_reads = TRIMMOMATIC_v0_32.out.countfile.collectFile(name: '2_trimmed_readcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false)
     
     COMPLEXITY_FILTER(TRIMMOMATIC_v0_32.out.reads)
 
     KMERNORM_v1_0_0(COMPLEXITY_FILTER.out.reads)
-    CH_count_complex_reads = KMERNORM_v1_0_0.out.plex_countfile.collectFile(name: '3_complex_readcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER)
-    CH_count_normalized_reads = KMERNORM_v1_0_0.out.norm_countfile.collectFile(name: '4_normalized_readcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER)
+    CH_count_complex_reads = KMERNORM_v1_0_0.out.plex_countfile.collectFile(name: '3_complex_readcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false)
+    CH_count_normalized_reads = KMERNORM_v1_0_0.out.norm_countfile.collectFile(name: '4_normalized_readcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false)
 
 	DEINTERLEAVE(KMERNORM_v1_0_0.out.reads)
 
@@ -70,26 +72,65 @@ workflow {
 		CH_bwa_index = BWA_INDEX.out.index
 	}
 
+	// Build the BLAST db once, reusing an existing one next to contam_ref_fasta if present.
+	// Triggered here (early) rather than next to CONTAM_CONTIG_FINDER so it has the whole
+	// read-processing + assembly pipeline to finish in before it's actually needed.
+	// A large reference gets split into volumes by makeblastdb, so only a top-level .nal
+	// alias file is written next to contam_ref_fasta — check that its listed volumes
+	// actually exist too; an alias file by itself doesn't mean the db is usable.
+	def nal_file = file("${params.contam_ref_fasta}.nal")
+	def blast_db_ready
+	if (nal_file.exists()) {
+		def dblist = (nal_file.text =~ /(?m)^DBLIST\s+(.+)$/)
+		def volumes = dblist ? dblist[0][1].replaceAll('"', '').trim().split(/\s+/) : []
+		blast_db_ready = volumes.size() > 0 && volumes.every { file("${it}.nhr").exists() }
+	} else {
+		blast_db_ready = file("${params.contam_ref_fasta}.nhr").exists()
+	}
+	if (blast_db_ready) {
+		CH_blast_fasta = channel.value(bwa_fasta_file)
+		// Glob covers both single-volume (<fasta>.nhr) and multi-volume (<fasta>.nal,
+		// <fasta>.00.nhr, ...) layouts without hand-maintaining BLAST's version-dependent
+		// extension list, the way the BWA branch above can with its fixed 5 extensions.
+		CH_blast_index = channel.value(file("${params.contam_ref_fasta}*.n??"))
+	} else {
+		BLAST_INDEX(channel.value(bwa_fasta_file))
+		CH_blast_fasta = BLAST_INDEX.out.fasta
+		CH_blast_index = BLAST_INDEX.out.index
+	}
+
 	CONTAM_READ_FINDER(DEINTERLEAVE.out.reads_gz, CH_bwa_fasta, CH_bwa_index)
 	CONTAM_READ_REPORTER(CONTAM_READ_FINDER.out.aligned)
 	CONTAM_READ_REMOVER(CONTAM_READ_REPORTER.out.join(KMERNORM_v1_0_0.out.reads))
-	CH_count_clean_reads = CONTAM_READ_REMOVER.out.countfile.collectFile(name: '5_clean_readcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER)
+	CH_count_clean_reads = CONTAM_READ_REMOVER.out.countfile.collectFile(name: '5_clean_readcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false)
 
     SPADES_v3_15_2(CONTAM_READ_REMOVER.out.reads)
-    CH_count_raw_contigs =SPADES_v3_15_2.out.countfile.collectFile(name: '6_raw_contigcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER)
+    CH_count_raw_contigs =SPADES_v3_15_2.out.countfile.collectFile(name: '6_raw_contigcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false)
 
     TRIM_CONTIGS(SPADES_v3_15_2.out.passed)
-    CH_count_trimmed_contigs = TRIM_CONTIGS.out.countfile.collectFile(name: '7_trimmed_contigcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER)
+    CH_count_trimmed_contigs = TRIM_CONTIGS.out.countfile.collectFile(name: '7_trimmed_contigcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false)
 
-    CONTAM_CONTIG_FINDER(TRIM_CONTIGS.out.trimmed_contigs)
+    CONTAM_CONTIG_FINDER(TRIM_CONTIGS.out.trimmed_contigs, CH_blast_fasta, CH_blast_index)
     CONTAM_CONTIG_REMOVER(CONTAM_CONTIG_FINDER.out.join(TRIM_CONTIGS.out.length_passing_contigs))
-    
-    //MEASURE_SAG(TRIM_CONTIGS.out)
-    //CH_count_sag_stats = MEASURE_SAG.out.countfile.collectFile(name: '8_sag_stats.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER)
-    
-    // 8_clean_contigcounts.csv had no upstream countfile source (nothing downstream of
-    // TRIM_CONTIGS currently emits a "clean contigs" count) — add a collectFile() call
-    // here, same shape as the others, once that step exists.
+    CH_count_final_contigs = CONTAM_CONTIG_REMOVER.out.countfile.collectFile(name: '8_final_contigcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false)
+
+    MEASURE_SAG(TRIM_CONTIGS.out.trimmed_contigs)
+    CH_count_sag_stats = MEASURE_SAG.out.countfile.collectFile(name: '8_sag_stats.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false)
+
+    // Combine every stepwise count file into one, earliest stage first. Each one already
+    // carries its own COUNT_HEADER line (from its own collectFile seed above) — strip
+    // that off per file before stacking, then let this collectFile's own seed add it
+    // back once. .concat() (not .mix()) is what feeds stage-ordered input into this —
+    // .mix() would interleave based on whichever stage's tasks happen to finish first.
+    // sort: false is equally required: collectFile's default sort ('hash') reorders
+    // entries by content hash regardless of input order, which was silently undoing
+    // the .concat() ordering above.
+    CH_all_counts = CH_count_raw_reads
+        .concat(CH_count_trimmed_reads, CH_count_complex_reads, CH_count_normalized_reads,
+                CH_count_clean_reads, CH_count_raw_contigs, CH_count_trimmed_contigs,
+                CH_count_final_contigs, CH_count_sag_stats)
+        .map { it.text.readLines().drop(1).join('\n') + '\n' }
+        .collectFile(name: 'all_stepwise_counts.csv', storeDir: "${params.output}/sample_tracking", seed: COUNT_HEADER, cache: false, sort: false)
 }
 
 
@@ -106,7 +147,7 @@ process FASTQC_v0_11_9 {
         path("1_raw_${ID}.count"), emit: countfile
     shell:
         '''
-        echo "Raw_readcount,$(expr $(zcat !{r1} | wc -l) / 4),!{ID}" >> "1_raw_!{ID}.count"
+        echo "Raw_readcount,$(expr $(zcat !{r1} | wc -l) / 4 + $(zcat !{r2} | wc -l) / 4),!{ID}" >> "1_raw_!{ID}.count"
         fastqc -t !{task.cpus} -q !{r1} !{r2} --noextract
         ''' }
 
@@ -123,7 +164,7 @@ process TRIMMOMATIC_v0_32 {
         '''
         trimmomatic PE -phred33 -threads !{task.cpus} !{r1} !{r2} \
         trimmed_!{ID}_r1.fastq.gz orphan_!{ID}_r1.fastq.gz trimmed_!{ID}_r2.fastq.gz orphan_!{ID}_r2.fastq.gz LEADING:0 TRAILING:5 SLIDINGWINDOW:4:15 MINLEN:36
-        echo "Trimmed_readcount,$(expr $(zcat trimmed_!{ID}_r1.fastq.gz | wc -l) / 4),!{ID}" > "2_trimmed_!{ID}.count"
+        echo "Trimmed_readcount,$(expr $(zcat trimmed_!{ID}_r1.fastq.gz | wc -l) / 4 + $(zcat trimmed_!{ID}_r2.fastq.gz | wc -l) / 4),!{ID}" > "2_trimmed_!{ID}.count"
         ''' }
 
 process COMPLEXITY_FILTER {
@@ -151,9 +192,9 @@ process KMERNORM_v1_0_0 {
     shell:
         '''
         gunzip -c !{paired} > temp_paired.fastq
-        echo "Complexity_filtered_readcount,$(expr $(cat temp_paired.fastq | wc -l) / 8),!{ID}" >> "3_pe_!{ID}.count"
+        echo "Complexity_filtered_readcount,$(expr $(cat temp_paired.fastq | wc -l) / 4),!{ID}" >> "3_pe_!{ID}.count"
         kmernorm !{params.kmernorm_opts} temp_paired.fastq > normalized_pe_!{ID}.fastq
-        echo "Normalized_readcount,$(expr $(cat normalized_pe_!{ID}.fastq | wc -l) / 8),!{ID}" >> "4_normalized_pe_!{ID}.count"
+        echo "Normalized_readcount,$(expr $(cat normalized_pe_!{ID}.fastq | wc -l) / 4),!{ID}" >> "4_normalized_pe_!{ID}.count"
         gzip normalized_pe_!{ID}.fastq
 
         # Cleanup
@@ -174,7 +215,7 @@ process DEINTERLEAVE {
 	""" }
 
 process BWA_INDEX {
-    tag "BWA index"
+    tag "BWA indexing ref contaminants"
     container 'quay.io/biocontainers/bwa:0.7.17--h5bf99c6_8'
     // Persist the index next to the reference itself so future runs (and other
     // projects pointed at the same contam_ref_fasta) find it via the auto-detect check
@@ -190,6 +231,25 @@ process BWA_INDEX {
     script:
     """
     bwa index $fasta
+    """
+}
+
+process BLAST_INDEX {
+    tag "makeblastdb on ref contaminants"
+    container 'quay.io/biocontainers/blast:2.11.0--pl5262h3289130_1'
+    // Persist the db next to the reference itself, same convention as BWA_INDEX, so
+    // future runs find it via the auto-detect check instead of rebuilding it.
+    publishDir { file(params.contam_ref_fasta).getParent() }, pattern: "${file(params.contam_ref_fasta).getName()}.*", mode: 'copy'
+    input:
+    path fasta
+
+    output:
+    path("${fasta}.*"), emit: index
+    path(fasta),        emit: fasta
+
+    script:
+    """
+    makeblastdb -in $fasta -dbtype nucl -out $fasta -title $fasta
     """
 }
 
@@ -308,11 +368,14 @@ process MEASURE_SAG{
 process CONTAM_CONTIG_FINDER {
     tag "${ID}"
     container 'quay.io/biocontainers/blast:2.11.0--pl5262h3289130_1'
-    input: tuple val(ID), path(contigs)
+    input:
+        tuple val(ID), path(contigs)
+        path(refcontam_fasta)
+        path(index)
     output: tuple val(ID), path("contig_blast_${ID}.tsv")
     shell:
         '''
-        blastn -db !{params.blast_contam_db} -query !{contigs} -out tmp_1_blast.tsv -num_threads !{task.cpus} -max_target_seqs 10 -outfmt "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore sallseqid score nident positive gaps ppos qframe sframe qseq sseq qlen slen salltitles"
+        blastn -db !{refcontam_fasta} -query !{contigs} -out tmp_1_blast.tsv -num_threads !{task.cpus} -max_target_seqs 10 -outfmt "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore sallseqid score nident positive gaps ppos qframe sframe qseq sseq qlen slen salltitles"
         echo -e 'Query Seq-id\tSubject Seq-id\tPercentage of identical matches\tAlignment length\tNumber of mismatches\tNumber of gap openings\tStart of alignment in query\tEnd of alignment in query\tStart of alignment in subject\tEnd of alignment in subject\tExpect value\tBit score\tAll subject Seq-id(s)\tRaw score\tNumber of identical matches\tNumber of positive-scoring matches\tTotal number of gaps\tPercentage of positive-scoring matches\tQuery frame\tSubject frame\tAligned part of query sequence\tAligned part of subject sequence\tQuery sequence length\tSubject sequence length\tAll Subject Title(s)' > tmp_header.tsv
         cat tmp_header.tsv tmp_1_blast.tsv > contig_blast_!{ID}.tsv
         rm tmp_header.tsv tmp_1_blast.tsv
