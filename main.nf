@@ -16,6 +16,11 @@ params.kmernorm_opts = "-k 21 -t 30 -c 3"
 params.complexity_threshold = "0.05"
 params.reference_threshold = "0.05"
 
+//# CONTIG PROCESSING
+params.assembly_minlength = '1000' //gremlin Change back to 1000
+params.assembly_righttrim = '200'
+params.assembly_lefttrim = '200'
+
 //#     DECONTAMINATION
 params.contam_ref_fasta = "/Users/greggavelis/Desktop/SCGC_Refcontam/GRCh38_AG665_mm10.fa"
 // BWA Index is auto-detected next to contam_ref_fasta (<contam_ref_fasta>.amb/.ann/.bwt/.pac/.sa);
@@ -36,13 +41,21 @@ workflow {
     
     CH_fastq = params.dev ? CH_fastq.take(1) : CH_fastq
 
+    def CH_stepwise_counts = "${params.output}/sample_tracking/stepwise_counts"
+    def COUNT_HEADER = "Metric,Count,Sample_ID\n"
+
     FASTQC_v0_11_9(CH_fastq)
+    CH_count_raw_reads = FASTQC_v0_11_9.out.countfile.collectFile(name: '1_raw_readcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER)
+
     TRIMMOMATIC_v0_32(CH_fastq)
-    COMPLEXITY_FILTER(TRIMMOMATIC_v0_32.out.reads)
-    KMERNORM_v1_0_0(COMPLEXITY_FILTER.out.reads)
+    CH_count_trimmed_reads = TRIMMOMATIC_v0_32.out.countfile.collectFile(name: '2_trimmed_readcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER)
     
-    // LOG_COMPLEX_READS(KMERNORM_v1_0_0.out.plex_countfile.collect())
-	// LOG_NORMALIZED_READS(KMERNORM_v1_0_0.out.norm_countfile.collect())
+    COMPLEXITY_FILTER(TRIMMOMATIC_v0_32.out.reads)
+
+    KMERNORM_v1_0_0(COMPLEXITY_FILTER.out.reads)
+    CH_count_complex_reads = KMERNORM_v1_0_0.out.plex_countfile.collectFile(name: '3_complex_readcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER)
+    CH_count_normalized_reads = KMERNORM_v1_0_0.out.norm_countfile.collectFile(name: '4_normalized_readcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER)
+
 	DEINTERLEAVE(KMERNORM_v1_0_0.out.reads)
 
 	// Build the BWA index once, reusing an existing one next to contam_ref_fasta if present.
@@ -60,8 +73,26 @@ workflow {
 	CONTAM_READ_FINDER(DEINTERLEAVE.out.reads_gz, CH_bwa_fasta, CH_bwa_index)
 	CONTAM_READ_REPORTER(CONTAM_READ_FINDER.out.aligned)
 	CONTAM_READ_REMOVER(CONTAM_READ_REPORTER.out.join(KMERNORM_v1_0_0.out.reads))
-	// LOG_CLEAN_READS(CONTAM_READ_REMOVER.out.countfile.collect())
+	CH_count_clean_reads = CONTAM_READ_REMOVER.out.countfile.collectFile(name: '5_clean_readcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER)
+
+    SPADES_v3_15_2(CONTAM_READ_REMOVER.out.reads)
+    CH_count_raw_contigs =SPADES_v3_15_2.out.countfile.collectFile(name: '6_raw_contigcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER)
+
+    TRIM_CONTIGS(SPADES_v3_15_2.out.passed)
+    CH_count_trimmed_contigs = TRIM_CONTIGS.out.countfile.collectFile(name: '7_trimmed_contigcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER)
+
+    CONTAM_CONTIG_FINDER(TRIM_CONTIGS.out.trimmed_contigs)
+    CONTAM_CONTIG_REMOVER(CONTAM_CONTIG_FINDER.out.join(TRIM_CONTIGS.out.length_passing_contigs))
+    
+    //MEASURE_SAG(TRIM_CONTIGS.out)
+    //CH_count_sag_stats = MEASURE_SAG.out.countfile.collectFile(name: '8_sag_stats.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER)
+    
+    // 8_clean_contigcounts.csv had no upstream countfile source (nothing downstream of
+    // TRIM_CONTIGS currently emits a "clean contigs" count) — add a collectFile() call
+    // here, same shape as the others, once that step exists.
 }
+
+
 
 process FASTQC_v0_11_9 {
     tag "${ID} quality check"
@@ -218,3 +249,88 @@ process CONTAM_READ_REMOVER {
         tuple val(ID), path("contamfiltered_pe_${ID}.fastq.gz"), emit: reads
         path("5_contamfiltered_pe_${ID}.count"), emit: countfile
     script: template "contam_read_remover.py" }
+
+process SPADES_v3_15_2 {
+    tag "${ID} assembling"
+    errorStrategy 'ignore'
+    //errorStrategy = { task.exitStatus in [1,255] ? 'ignore' : 'retry' }
+    // maxRetries = 3
+    container 'quay.io/biocontainers/spades:3.15.2--h95f258a_1'
+    publishDir { "${params.output}/${ID}/intermediate_assemblies_${ID}" }, pattern: "0_all_contigs_*.fasta", mode: params.publishmode
+    input: tuple val(ID), path(clean_reads)
+    output:
+        tuple val(ID), path("0_all_contigs_${ID}.fasta"), emit: passed
+        path("6_all_contigs_${ID}.count"), emit: countfile
+    shell:
+        '''
+        [ ! -d spades_!{ID} ] && mkdir spades_!{ID}
+        spades.py -o spades_!{ID} --careful --sc --phred-offset 33 -t !{task.cpus} --12 !{clean_reads}
+        cp spades_!{ID}/contigs.fasta 0_all_contigs_!{ID}.fasta
+        echo "Raw_contig_count,$(grep -c '>' spades_!{ID}/contigs.fasta),!{ID}" > 6_all_contigs_!{ID}.count
+        ''' }
+
+process TRIM_CONTIGS {
+    errorStrategy 'finish'
+    tag "${ID}"
+    container 'brwnj/kmernorm:v1.0.0'
+    publishDir { "${params.output}/${ID}/intermediate_assemblies_${ID}" }, pattern: "*.fasta", mode: params.publishmode
+    input: tuple val(ID), path(contigs)
+    output:
+        tuple val(ID), path("2a_long_passing_contigs_${ID}.fasta"), emit: length_passing_contigs
+        tuple val(ID), path("2b_short_discarded_contigs_${ID}.fasta"), emit: short_contigs
+        tuple val(ID), path("3_trimmed_contigs_${ID}.fasta"), emit: trimmed_contigs
+        path("2a_long_passing_contigs_${ID}.fasta"), emit: fasta
+        path("7_length_passing_contigs_${ID}.count"), emit: countfile
+    script: template 'trim_and_deduplicate_contigs.py' }
+
+process MEASURE_SAG{
+    tag "${ID}"
+    container 'brwnj/kmernorm:v1.0.0'
+    publishDir { "${params.output}/${ID}/logs_${ID}" }
+    input: tuple val(ID), path(contigs)
+    output: path("sag_stats_${ID}.csv"), emit: countfile
+    script:
+    """
+    #!/usr/bin/env python
+    from Bio import SeqIO; from Bio.SeqUtils import GC
+    max_contig_length = 0; STR_all_seq = ''
+    for record in SeqIO.parse("${contigs}", "fasta"):
+        STR_all_seq = STR_all_seq + record.seq          # read in the DNA, 1 contig at a time
+        if len(record.seq) > max_contig_length:
+            max_contig_length = len(record.seq)
+    out=open("sag_stats_${ID}.csv", "a")
+    print("Max_contig_length", str(max_contig_length), "${ID}", sep=",", file=out)
+    print("Final_assembly_length", str(len(STR_all_seq)), "${ID}", sep=",", file=out)
+    print("GC_content", str(round(GC(STR_all_seq),2)), "${ID}", sep=",", file=out)
+    out.close()
+    """  }
+
+process CONTAM_CONTIG_FINDER {
+    tag "${ID}"
+    container 'quay.io/biocontainers/blast:2.11.0--pl5262h3289130_1'
+    input: tuple val(ID), path(contigs)
+    output: tuple val(ID), path("contig_blast_${ID}.tsv")
+    shell:
+        '''
+        blastn -db !{params.blast_contam_db} -query !{contigs} -out tmp_1_blast.tsv -num_threads !{task.cpus} -max_target_seqs 10 -outfmt "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore sallseqid score nident positive gaps ppos qframe sframe qseq sseq qlen slen salltitles"
+        echo -e 'Query Seq-id\tSubject Seq-id\tPercentage of identical matches\tAlignment length\tNumber of mismatches\tNumber of gap openings\tStart of alignment in query\tEnd of alignment in query\tStart of alignment in subject\tEnd of alignment in subject\tExpect value\tBit score\tAll subject Seq-id(s)\tRaw score\tNumber of identical matches\tNumber of positive-scoring matches\tTotal number of gaps\tPercentage of positive-scoring matches\tQuery frame\tSubject frame\tAligned part of query sequence\tAligned part of subject sequence\tQuery sequence length\tSubject sequence length\tAll Subject Title(s)' > tmp_header.tsv
+        cat tmp_header.tsv tmp_1_blast.tsv > contig_blast_!{ID}.tsv
+        rm tmp_header.tsv tmp_1_blast.tsv
+        ''' }
+
+process CONTAM_CONTIG_REMOVER {
+    tag "${ID}"
+    //errorStrategy = { task.exitStatus in [0] ? 'ignore' : 'retry' }
+    container 'brwnj/kmernorm:v1.0.0'
+    //publishDir "${DIR_out}/${ID.tokenize('_')[0]}/${ID}/intermediate_assemblies_${ID}", enabled: ( params.SPC == true ), pattern: "4b_contam_contigs_${ID}.fasta", mode: params.publishmode
+    //publishDir "${DIR_out}/${ID.tokenize('_')[0]}/${ID}", enabled: ( params.SPC == true ), pattern: "SCGC_${ID}_contigs.fasta", mode: params.publishmode
+    //publishDir "${DIR_out}/${ID}/intermediate_assemblies_${ID}", enabled: ( params.SPC == false ), pattern: "4b_contam_contigs_${ID}.fasta", mode: params.publishmode
+    //publishDir "${DIR_out}/${ID}", enabled: ( params.SPC == false ), pattern: "SCGC_${ID}_contigs.fasta", mode: params.publishmode
+    input:
+        tuple val(ID), path(blast_tsv), path(contigs)
+    output:
+        tuple val(ID), path("SCGC_${ID}_contigs.fasta"), emit: contigs
+        path("SCGC_${ID}_contigs.fasta"), emit: fasta
+        path("4b_contam_contigs_${ID}.fasta"), emit: contam_contigs
+        path("8_final_contigs_${ID}.count"), emit: countfile
+    script: template 'contam_contig_remover.py' }
