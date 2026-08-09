@@ -42,11 +42,11 @@ workflow {
     FASTQC_v0_11_9(CH_fastq)
     TRIMMOMATIC_v0_32(CH_fastq)
     COMPLEXITY_FILTER(TRIMMOMATIC_v0_32.out.reads)
-    KMERNORM_v1_1_0(COMPLEXITY_FILTER.out.reads)
+    KMERNORM_v1_0_0(COMPLEXITY_FILTER.out.reads)
     
     // LOG_COMPLEX_READS(KMERNORM_v1_0_0.out.plex_countfile.collect())
 	// LOG_NORMALIZED_READS(KMERNORM_v1_0_0.out.norm_countfile.collect())
-	DEINTERLEAVE(KMERNORM_v1_0_0.out.reads_gz)
+	DEINTERLEAVE(KMERNORM_v1_0_0.out.reads)
 	// CONTAM_READ_FINDER(DEINTERLEAVE.out.reads_gz)
 	// CONTAM_READ_REMOVER(CONTAM_READ_FINDER.out.join(KMERNORM_v1_0_0.out.reads_gz))
 	// LOG_CLEAN_READS(CONTAM_READ_REMOVER.out.countfile.collect())
@@ -86,19 +86,19 @@ process TRIMMOMATIC_v0_32 {
 
 process COMPLEXITY_FILTER {
     tag "${ID}"
-    container 'complexity-filter-env:latest'
-    //container='brwnj/kmernorm:v1.0.0'
+    //container 'complexity-filter-env:latest'
+    container 'brwnj/kmernorm:v1.0.0'
     publishDir { "${params.output}/${ID}/reads_${ID}" }, pattern: "*fastq.gz", mode: params.publishmode
     input: tuple val(ID), path(r1), path(r2)
     output: tuple val(ID), path("pe_${ID}.fastq.gz"), emit: reads
     script: template 'complexity_filter.py' }
 
-process KMERNORM_v1_1_0 {
+process KMERNORM_v1_0_0 {
     tag "${ID}"
     //memory = { 16.GB * task.attempt }
     //errorStrategy = {task.attempt <= 3 ? 'retry' : 'ignore'}
     //maxRetries = 3
-    container 'brwnj/kmernorm:v1.1.0'
+    container 'brwnj/kmernorm:v1.0.0' // 'brwnj/kmernorm:v1.1.0'
     publishDir { "${params.output}/${ID}/reads_${ID}"}, pattern: "normalized_pe_*.fastq.gz", mode: params.publishmode
     publishDir { "${params.output}/sample_tracking" }, pattern: "*count", mode: params.publishmode
     input: tuple val(ID), path(paired)
@@ -117,4 +117,17 @@ process KMERNORM_v1_1_0 {
         # Cleanup
         rm temp_paired.fastq
         ''' }
+
+process DEINTERLEAVE {
+	tag "${ID}"
+	container 'quay.io/biocontainers/bbmap:38.90--he522d1c_3'
+        publishDir { "${params.output}/${ID}/reads_${ID}"}, pattern: "r*_norm*.fastq.gz", mode: params.publishmode
+    input: tuple val(ID), path(normed)
+	output: tuple val(ID), path("r1_norm_${ID}.fastq.gz"), path("r2_norm_${ID}.fastq.gz"), emit: reads_gz
+	script:
+	"""
+	reformat.sh in=${normed} out1=r1_norm_${ID}.fastq out2=r2_norm_${ID}.fastq
+	gzip r1_norm_${ID}.fastq
+	gzip r2_norm_${ID}.fastq
+	""" }
 
