@@ -17,7 +17,7 @@ params.complexity_threshold = "0.05"
 params.reference_threshold = "0.05"
 
 //# CONTIG PROCESSING
-params.assembly_minlength = '1000' //gremlin Change back to 1000
+params.assembly_minlength = '1000'
 params.assembly_righttrim = '200'
 params.assembly_lefttrim = '200'
 
@@ -83,7 +83,11 @@ workflow {
 	if (nal_file.exists()) {
 		def dblist = (nal_file.text =~ /(?m)^DBLIST\s+(.+)$/)
 		def volumes = dblist ? dblist[0][1].replaceAll('"', '').trim().split(/\s+/) : []
-		blast_db_ready = volumes.size() > 0 && volumes.every { file("${it}.nhr").exists() }
+		// DBLIST entries are bare filenames (no directory) — resolve them against
+		// contam_ref_fasta's own directory, not wherever `nextflow run` was launched
+		// from, or this always evaluates false and BLAST_INDEX reruns every time.
+		def ref_dir = nal_file.getParent()
+		blast_db_ready = volumes.size() > 0 && volumes.every { file("${ref_dir}/${it}.nhr").exists() }
 	} else {
 		blast_db_ready = file("${params.contam_ref_fasta}.nhr").exists()
 	}
@@ -158,7 +162,14 @@ process FASTQC_v0_11_9 {
         '''
         echo "Raw_readcount,$(expr $(zcat !{r1} | wc -l) / 4 + $(zcat !{r2} | wc -l) / 4),!{ID}" >> "1_raw_!{ID}.count"
         fastqc -t !{task.cpus} -q !{r1} !{r2} --noextract
-        ''' }
+        '''
+    stub:
+    // Neither .qc nor .html is consumed downstream (only .countfile is), so these just
+    // need to exist to satisfy the declared outputs.
+    """
+    touch stub_fastqc.zip stub_fastqc.html
+    echo "Raw_readcount,20,${ID}" >> "1_raw_${ID}.count"
+    """ }
 
 process TRIMMOMATIC_v0_32 {
     tag "${ID} quality trimming"
@@ -174,7 +185,15 @@ process TRIMMOMATIC_v0_32 {
         trimmomatic PE -phred33 -threads !{task.cpus} !{r1} !{r2} \
         trimmed_!{ID}_r1.fastq.gz orphan_!{ID}_r1.fastq.gz trimmed_!{ID}_r2.fastq.gz orphan_!{ID}_r2.fastq.gz LEADING:0 TRAILING:5 SLIDINGWINDOW:4:15 MINLEN:36
         echo "Trimmed_readcount,$(expr $(zcat trimmed_!{ID}_r1.fastq.gz | wc -l) / 4 + $(zcat trimmed_!{ID}_r2.fastq.gz | wc -l) / 4),!{ID}" > "2_trimmed_!{ID}.count"
-        ''' }
+        '''
+    stub:
+    // First 10 real reads from each of r1/r2 — becomes COMPLEXITY_FILTER's stub input,
+    // which genuinely zcats/subsets it, so this needs to be valid gzipped fastq, not empty.
+    """
+    zcat ${r1} | head -40 | gzip > trimmed_${ID}_r1.fastq.gz
+    zcat ${r2} | head -40 | gzip > trimmed_${ID}_r2.fastq.gz
+    echo "Trimmed_readcount,20,${ID}" > 2_trimmed_${ID}.count
+    """ }
 
 process COMPLEXITY_FILTER {
     tag "${ID}"
@@ -183,7 +202,14 @@ process COMPLEXITY_FILTER {
     publishDir { "${params.output}/${ID}/reads_${ID}" }, pattern: "*fastq.gz", mode: params.publishmode
     input: tuple val(ID), path(r1), path(r2)
     output: tuple val(ID), path("pe_${ID}.fastq.gz"), emit: reads
-    script: template 'complexity_filter.py' }
+    script: template 'complexity_filter.py'
+    stub:
+    // First 10 real read pairs from r1/r2, properly interleaved: `paste - - - -`
+    // collapses each 4-line fastq record to one line, pasting the two collapsed
+    // streams side by side then expanding tabs back to newlines interleaves them.
+    """
+    paste <(zcat ${r1} | head -40 | paste - - - -) <(zcat ${r2} | head -40 | paste - - - -) | tr '\\t' '\\n' | gzip > pe_${ID}.fastq.gz
+    """ }
 
 process KMERNORM_v1_0_0 {
     tag "${ID}"
@@ -205,7 +231,15 @@ process KMERNORM_v1_0_0 {
 
         # Cleanup
         rm temp_paired.fastq
-        ''' }
+        '''
+    stub:
+    // `paired` (from COMPLEXITY_FILTER's stub) is already real subsetted read data —
+    // just carry it forward under the expected output name rather than re-deriving it.
+    """
+    cp ${paired} normalized_pe_${ID}.fastq.gz
+    echo "Complexity_filtered_readcount,20,${ID}" >> 3_pe_${ID}.count
+    echo "Normalized_readcount,20,${ID}" >> 4_normalized_pe_${ID}.count
+    """ }
 
 process DEINTERLEAVE {
 	tag "${ID}"
@@ -225,8 +259,9 @@ process BWA_INDEX {
     container 'quay.io/biocontainers/bwa:0.7.17--h5bf99c6_8'
     // Persist the index next to the reference itself so future runs (and other
     // projects pointed at the same contam_ref_fasta) find it via the auto-detect check
-    // in the workflow block instead of rebuilding it.
-    publishDir { file(params.contam_ref_fasta).getParent() }, pattern: "*.{amb,ann,bwt,pac,sa}", mode: 'copy'
+    // in the workflow block instead of rebuilding it. enabled: !workflow.stubRun keeps
+    // stub output (see `stub:` below) from ever landing in this shared external directory.
+    publishDir { file(params.contam_ref_fasta).getParent() }, pattern: "*.{amb,ann,bwt,pac,sa}", mode: 'copy', enabled: !workflow.stubRun
     input:
     path fasta
 
@@ -238,14 +273,20 @@ process BWA_INDEX {
     """
     bwa index $fasta
     """
+    stub:
+    """
+    touch ${fasta}.amb ${fasta}.ann ${fasta}.bwt ${fasta}.pac ${fasta}.sa
+    """
 }
 
 process BLAST_INDEX {
     tag "makeblastdb on ref contaminants"
     container 'quay.io/biocontainers/blast:2.11.0--pl5262h3289130_1'
     // Persist the db next to the reference itself, same convention as BWA_INDEX, so
-    // future runs find it via the auto-detect check instead of rebuilding it.
-    publishDir { file(params.contam_ref_fasta).getParent() }, pattern: "${file(params.contam_ref_fasta).getName()}.*", mode: 'copy'
+    // future runs find it via the auto-detect check instead of rebuilding it. Same
+    // enabled: !workflow.stubRun guard as BWA_INDEX — this is exactly what leaked
+    // 0-byte stub .nhr/.nin/.nsq files into the real reference directory before.
+    publishDir { file(params.contam_ref_fasta).getParent() }, pattern: "${file(params.contam_ref_fasta).getName()}.*", mode: 'copy', enabled: !workflow.stubRun
     input:
     path fasta
 
@@ -256,6 +297,10 @@ process BLAST_INDEX {
     script:
     """
     makeblastdb -in $fasta -dbtype nucl -out $fasta -title $fasta
+    """
+    stub:
+    """
+    touch ${fasta}.nhr ${fasta}.nin ${fasta}.nsq
     """
 }
 
@@ -279,7 +324,12 @@ process CONTAM_READ_FINDER {
     bwa aln -n !{params.reference_threshold} -t !{task.cpus} !{fasta} !{norm2} > norm_!{ID}_r2.fastq.sai
     echo 'retrieving hits'
     bwa sampe !{fasta} norm_!{ID}_r1.fastq.sai norm_!{ID}_r2.fastq.sai !{norm1} !{norm2} > contam_!{ID}.sam
-    '''  }
+    '''
+    stub:
+    """
+    touch norm_${ID}_r1.fastq.sai norm_${ID}_r2.fastq.sai
+    printf '@HD\\tVN:1.6\\tSO:unsorted\\n' > contam_${ID}.sam
+    """ }
 
 process CONTAM_READ_REPORTER {
     tag "${ID}"
@@ -327,7 +377,14 @@ process SPADES_v3_15_2 {
         spades.py -o spades_!{ID} --careful --sc --phred-offset 33 -t !{task.cpus} --12 !{clean_reads}
         cp spades_!{ID}/contigs.fasta 0_all_contigs_!{ID}.fasta
         echo "Raw_contig_count,$(grep -c '>' spades_!{ID}/contigs.fasta),!{ID}" > 6_all_contigs_!{ID}.count
-        ''' }
+        '''
+    stub:
+    """
+    printf '>stub_contig_1\\n' > 0_all_contigs_${ID}.fasta
+    yes ACGT | head -400 | tr -d '\\n' >> 0_all_contigs_${ID}.fasta
+    printf '\\n' >> 0_all_contigs_${ID}.fasta
+    echo "Raw_contig_count,1,${ID}" > 6_all_contigs_${ID}.count
+    """ }
 
 process TRIM_CONTIGS {
     errorStrategy 'finish'
@@ -379,7 +436,13 @@ process CONTAM_CONTIG_FINDER {
         echo -e 'Query Seq-id\tSubject Seq-id\tPercentage of identical matches\tAlignment length\tNumber of mismatches\tNumber of gap openings\tStart of alignment in query\tEnd of alignment in query\tStart of alignment in subject\tEnd of alignment in subject\tExpect value\tBit score\tAll subject Seq-id(s)\tRaw score\tNumber of identical matches\tNumber of positive-scoring matches\tTotal number of gaps\tPercentage of positive-scoring matches\tQuery frame\tSubject frame\tAligned part of query sequence\tAligned part of subject sequence\tQuery sequence length\tSubject sequence length\tAll Subject Title(s)' > tmp_header.tsv
         cat tmp_header.tsv tmp_1_blast.tsv > contig_blast_!{ID}.tsv
         rm tmp_header.tsv tmp_1_blast.tsv
-        ''' }
+        '''
+    stub:
+    // Header-only, matching what a real run with zero blast hits produces — keeps
+    // CONTAM_CONTIG_REMOVER's real (unstubbed) parser downstream working normally.
+    """
+    echo -e 'Query Seq-id\tSubject Seq-id\tPercentage of identical matches\tAlignment length\tNumber of mismatches\tNumber of gap openings\tStart of alignment in query\tEnd of alignment in query\tStart of alignment in subject\tEnd of alignment in subject\tExpect value\tBit score\tAll subject Seq-id(s)\tRaw score\tNumber of identical matches\tNumber of positive-scoring matches\tTotal number of gaps\tPercentage of positive-scoring matches\tQuery frame\tSubject frame\tAligned part of query sequence\tAligned part of subject sequence\tQuery sequence length\tSubject sequence length\tAll Subject Title(s)' > contig_blast_${ID}.tsv
+    """ }
 
 process CONTAM_CONTIG_REMOVER {
     tag "${ID}"
@@ -410,6 +473,12 @@ process CHECKM_v1_1_9 {
     mkdir tmp_dir; cp ${contigs} ./tmp_dir/final_contigs_${ID}.fasta
     checkm lineage_wf --reduced_tree -f checkm_${ID}/completeness_${ID}.tsv --tab_table -q -x fasta -t ${task.cpus} tmp_dir checkm_${ID}
     rm -r tmp_dir
+    """
+    stub:
+    """
+    mkdir checkm_${ID}
+    printf "Bin Id\\tCompleteness\\tContamination\\n" > checkm_${ID}/completeness_${ID}.tsv
+    printf "final_contigs_${ID}\\t99.9\\t0.1\\n" >> checkm_${ID}/completeness_${ID}.tsv
     """ }
 
 process ASSEMBLY_STATS_TABULATOR {
@@ -418,6 +487,9 @@ process ASSEMBLY_STATS_TABULATOR {
     input: path(COUNTS_TXT)
     output: path("assembly_stats.csv")
     script:
+    // Applied to every cell below so stub-run output can never be mistaken for a real
+    // assembly's stats — empty string on a real run, no visible effect.
+    def STUB_PREFIX = workflow.stubRun ? "STUB-RUN " : ""
     """
     #!/usr/bin/env python
     import pandas as pd
@@ -431,7 +503,7 @@ process ASSEMBLY_STATS_TABULATOR {
     try:
         DF_log = DF_log.pivot(index="Sample_ID", columns="Metric", values="Count") # Pivot to table indexed by Sample_ID
     except:
-        ### Deal with the very rare edge case where some samples have redundant analyses (e.g. Nextflow spawned the same job twice)
+        ### Deal with the rare edge case where some samples have redundant analyses (e.g. Nextflow spawned the same job twice)
         DF_log_orig = DF_log
         # Use "aggfunc=first" to discard redundant ID+metrics
         DF_log = DF_log.pivot_table(index="Sample_ID", columns="Metric", values="Count", aggfunc='first')
@@ -442,6 +514,8 @@ process ASSEMBLY_STATS_TABULATOR {
     DF_log['Contam_filtered_readcount'] = np.where(DF_log['Contam_filtered_readcount']=='NO_CHANGE',DF_log['Normalized_readcount'],DF_log['Contam_filtered_readcount']) 
 
     DF_log = DF_log[LIST_col_order] # Reorder columns to match LIST_col_order
+    ## Warn the user when the metrics are from a stub run, so they don't mistake them for real data.
+    DF_log = DF_log.applymap(lambda x: "${STUB_PREFIX}" + str(x))
     DF_log.to_csv(PATH_out, index=False)
     """
 
