@@ -117,18 +117,25 @@ workflow {
     MEASURE_SAG(TRIM_CONTIGS.out.trimmed_contigs)
     CH_count_sag_stats = MEASURE_SAG.out.countfile.collectFile(name: '8_sag_stats.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false)
 
+    CHECKM_v1_1_9(TRIM_CONTIGS.out.trimmed_contigs)
+    // .map() pulls the 'Completeness' column out of CheckM's --tab_table TSV directly in
+    // Groovy (no separate PARSE_CHECKM process/container needed for three lines of pandas).
+    CH_count_checkm = CHECKM_v1_1_9.out
+        .map { ID, checkm_dir ->
+            def lines = file("${checkm_dir}/completeness_${ID}.tsv").readLines()
+            def header = lines[0].split('\t')
+            def completeness = lines[1].split('\t')[header.findIndexOf { it == 'Completeness' }]
+            "CheckM1_est_genome_completeness,${completeness},${ID}\n"
+        }
+        .collectFile(name: '9_checkm_completeness.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false, sort: false)
+
     // Combine every stepwise count file into one, earliest stage first. Each one already
     // carries its own COUNT_HEADER line (from its own collectFile seed above) — strip
-    // that off per file before stacking, then let this collectFile's own seed add it
-    // back once. .concat() (not .mix()) is what feeds stage-ordered input into this —
-    // .mix() would interleave based on whichever stage's tasks happen to finish first.
-    // sort: false is equally required: collectFile's default sort ('hash') reorders
-    // entries by content hash regardless of input order, which was silently undoing
-    // the .concat() ordering above.
+    // that off per file before stacking, then let this collectFile's own seed add it back at the end.
     CH_all_counts = CH_count_raw_reads
         .concat(CH_count_trimmed_reads, CH_count_complex_reads, CH_count_normalized_reads,
                 CH_count_clean_reads, CH_count_raw_contigs, CH_count_trimmed_contigs,
-                CH_count_final_contigs, CH_count_sag_stats)
+                CH_count_final_contigs, CH_count_sag_stats, CH_count_checkm)
         .map { it.text.readLines().drop(1).join('\n') + '\n' }
         .collectFile(name: 'all_stepwise_counts.csv', storeDir: "${params.output}/sample_tracking", seed: COUNT_HEADER, cache: false, sort: false)
 }
@@ -178,9 +185,6 @@ process COMPLEXITY_FILTER {
 
 process KMERNORM_v1_0_0 {
     tag "${ID}"
-    //memory = { 16.GB * task.attempt }
-    //errorStrategy = {task.attempt <= 3 ? 'retry' : 'ignore'}
-    //maxRetries = 3
     container 'brwnj/kmernorm:v1.0.0' // 'brwnj/kmernorm:v1.1.0'
     publishDir { "${params.output}/${ID}/reads_${ID}"}, pattern: "normalized_pe_*.fastq.gz", mode: params.publishmode
     publishDir { "${params.output}/sample_tracking" }, pattern: "*count", mode: params.publishmode
@@ -255,12 +259,8 @@ process BLAST_INDEX {
 
 process CONTAM_READ_FINDER {
     tag "${ID}"
-    memory '9.GB'
-    // Docker Desktop's VM is capped at ~11.9GB total; this process is the only
-    // thing that comes close to that ceiling, so cap concurrency at 1 to make
-    // sure two samples can't stack their memory demand and OOM the VM even
-    // though each individually fits under it.
-    maxForks 1
+    memory '11.GB'
+    maxForks 1 // allows only 1 to run at a time. This protects our memory limit.
     errorStrategy 'terminate'
     container 'quay.io/biocontainers/bwa:0.7.17--h5bf99c6_8'
     input:
@@ -313,8 +313,6 @@ process CONTAM_READ_REMOVER {
 process SPADES_v3_15_2 {
     tag "${ID} assembling"
     errorStrategy 'ignore'
-    //errorStrategy = { task.exitStatus in [1,255] ? 'ignore' : 'retry' }
-    // maxRetries = 3
     container 'quay.io/biocontainers/spades:3.15.2--h95f258a_1'
     publishDir { "${params.output}/${ID}/intermediate_assemblies_${ID}" }, pattern: "0_all_contigs_*.fasta", mode: params.publishmode
     input: tuple val(ID), path(clean_reads)
@@ -383,12 +381,9 @@ process CONTAM_CONTIG_FINDER {
 
 process CONTAM_CONTIG_REMOVER {
     tag "${ID}"
-    //errorStrategy = { task.exitStatus in [0] ? 'ignore' : 'retry' }
     container 'brwnj/kmernorm:v1.0.0'
-    //publishDir "${DIR_out}/${ID.tokenize('_')[0]}/${ID}/intermediate_assemblies_${ID}", enabled: ( params.SPC == true ), pattern: "4b_contam_contigs_${ID}.fasta", mode: params.publishmode
-    //publishDir "${DIR_out}/${ID.tokenize('_')[0]}/${ID}", enabled: ( params.SPC == true ), pattern: "SCGC_${ID}_contigs.fasta", mode: params.publishmode
-    //publishDir "${DIR_out}/${ID}/intermediate_assemblies_${ID}", enabled: ( params.SPC == false ), pattern: "4b_contam_contigs_${ID}.fasta", mode: params.publishmode
-    //publishDir "${DIR_out}/${ID}", enabled: ( params.SPC == false ), pattern: "SCGC_${ID}_contigs.fasta", mode: params.publishmode
+    publishDir { "${params.output}/${ID}/intermediate_assemblies_${ID}" }, pattern: "4b_contam_contigs_*.fasta"
+    publishDir { "${params.output}/${ID}" }, pattern: "SCGC_*_contigs.fasta" 
     input:
         tuple val(ID), path(blast_tsv), path(contigs)
     output:
@@ -397,3 +392,20 @@ process CONTAM_CONTIG_REMOVER {
         path("4b_contam_contigs_${ID}.fasta"), emit: contam_contigs
         path("8_final_contigs_${ID}.count"), emit: countfile
     script: template 'contam_contig_remover.py' }
+
+process CHECKM_v1_1_9 {
+    tag "${ID} estimate completeness"
+    // --reduced_tree is a memory-saver for single-genome input, but it can be inaccurate for some lineages.
+    // If memory is NOT limiting, run CHECKM without --reduced_tree.
+    memory '11.GB'
+    maxForks 1 // allows only 1 to run at a time. This protects our memory limit.
+    container 'quay.io/biocontainers/checkm-genome:1.1.9--pyhdfd78af_0'
+    publishDir { "${params.output}/${ID}/QC_${ID}" }, mode: params.publishmode
+    input: tuple val(ID), path(contigs)
+    output: tuple val(ID), path("checkm_${ID}")
+    script:
+    """
+    mkdir tmp_dir; cp ${contigs} ./tmp_dir/final_contigs_${ID}.fasta
+    checkm lineage_wf --reduced_tree -f checkm_${ID}/completeness_${ID}.tsv --tab_table -q -x fasta -t ${task.cpus} tmp_dir checkm_${ID}
+    rm -r tmp_dir
+    """ }
