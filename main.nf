@@ -138,6 +138,8 @@ workflow {
                 CH_count_final_contigs, CH_count_sag_stats, CH_count_checkm)
         .map { it.text.readLines().drop(1).join('\n') + '\n' }
         .collectFile(name: 'all_stepwise_counts.csv', storeDir: "${params.output}/sample_tracking", seed: COUNT_HEADER, cache: false, sort: false)
+
+    ASSEMBLY_STATS_TABULATOR(CH_all_counts)
 }
 
 
@@ -409,3 +411,38 @@ process CHECKM_v1_1_9 {
     checkm lineage_wf --reduced_tree -f checkm_${ID}/completeness_${ID}.tsv --tab_table -q -x fasta -t ${task.cpus} tmp_dir checkm_${ID}
     rm -r tmp_dir
     """ }
+
+process ASSEMBLY_STATS_TABULATOR {
+    container 'brwnj/kmernorm:v1.0.0'
+    publishDir "${params.output}"
+    input: path(COUNTS_TXT)
+    output: path("assembly_stats.csv")
+    script:
+    """
+    #!/usr/bin/env python
+    import pandas as pd
+    import numpy as np
+    PATH_out = "assembly_stats.csv"
+    DF_log = pd.read_csv("${COUNTS_TXT}")
+
+    LIST_col_order = ["Sample_ID", "Raw_readcount", "Trimmed_readcount", "Complexity_filtered_readcount", "Normalized_readcount", "Contam_filtered_readcount", "Raw_contig_count", "Final_clean_contig_count", "Max_contig_length", "Final_assembly_length", "GC_content", "CheckM1_est_genome_completeness"]
+
+    print("Converting list of read/contig counts to table...")
+    try:
+        DF_log = DF_log.pivot(index="Sample_ID", columns="Metric", values="Count") # Pivot to table indexed by Sample_ID
+    except:
+        ### Deal with the very rare edge case where some samples have redundant analyses (e.g. Nextflow spawned the same job twice)
+        DF_log_orig = DF_log
+        # Use "aggfunc=first" to discard redundant ID+metrics
+        DF_log = DF_log.pivot_table(index="Sample_ID", columns="Metric", values="Count", aggfunc='first')
+    
+    DF_log.reset_index(inplace=True) # Make index 'Sample_ID' -> column
+
+    # If no dirty reads were found (i.e. Contam_filtered_readcount says "NO_CHANGE"), make numeric by copying readcount from upstream.
+    DF_log['Contam_filtered_readcount'] = np.where(DF_log['Contam_filtered_readcount']=='NO_CHANGE',DF_log['Normalized_readcount'],DF_log['Contam_filtered_readcount']) 
+
+    DF_log = DF_log[LIST_col_order] # Reorder columns to match LIST_col_order
+    DF_log.to_csv(PATH_out, index=False)
+    """
+
+}
