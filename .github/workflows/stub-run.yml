@@ -1,0 +1,48 @@
+name: Pipeline smoke test
+
+# Validates the pipeline's DAG/channel wiring on every push and PR using
+# -stub-run, so wiring bugs (bad container tags, .join() shape mismatches,
+# dangling process calls, etc.) surface in minutes instead of hours into a
+# real run. It does not validate the actual bioinformatics tools/logic.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  stub-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Nextflow
+        run: |
+          curl -s https://get.nextflow.io | bash
+          sudo mv nextflow /usr/local/bin/
+
+      - name: Run pipeline in stub-run mode
+        run: |
+          nextflow run main.nf -stub-run --dev \
+            --indir .github/test_data \
+            --output ci-results \
+            -with-docker
+        # nextflow.config is intentionally gitignored (machine-specific), so
+        # -with-docker enables Docker for this run directly on the CLI instead.
+        # BWA_INDEX/BLAST_INDEX still run in stub mode here since the real
+        # reference isn't present in CI — no ~8GB Zenodo download happens.
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextflow-logs
+          path: |
+            .nextflow.log
+            work/
