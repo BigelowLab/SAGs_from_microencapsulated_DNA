@@ -22,11 +22,16 @@ params.assembly_righttrim = '200'
 params.assembly_lefttrim = '200'
 
 //#     DECONTAMINATION
-params.contam_ref_fasta = "/Users/greggavelis/Desktop/SCGC_Refcontam/GRCh38_AG665_mm10.fa"
+// Relative + gitignored: a fresh clone has nothing here, and BWA_INDEX/BLAST_INDEX
+// download the fasta + prebuilt indexes from Zenodo (DOI 10.5281/zenodo.21682938) into
+// this path automatically on first run — no manual setup needed. Override with
+// --contam_ref_fasta to point at an already-populated location instead (e.g. a shared
+// path on a cluster) and avoid re-downloading the ~8GB reference per clone.
+params.contam_ref_fasta = "./reference/GRCh38_AG665_mm10.fa"
 params.contam_min_length=100 // for BLASTn on contigs
 params.contam_min_percid=95.0 // for BLASTn on contigs
-// BWA Index is auto-detected next to contam_ref_fasta (<contam_ref_fasta>.amb/.ann/.bwt/.pac/.sa);
-// BWA_INDEX only runs when one or more of those files is missing.
+// BWA/BLAST indexes are auto-detected next to contam_ref_fasta; the download only runs
+// when they (or the fasta itself) are missing.
 
 workflow {
 
@@ -60,14 +65,17 @@ workflow {
 
 	DEINTERLEAVE(KMERNORM_v1_0_0.out.reads)
 
-	// Build the BWA index once, reusing an existing one next to contam_ref_fasta if present.
-	def bwa_fasta_file = file(params.contam_ref_fasta, checkIfExists: true)
+	// Fetch the reference fasta + its BWA index from Zenodo once, reusing them if both
+	// already exist next to contam_ref_fasta. The fasta itself is no longer assumed to
+	// pre-exist (BWA_INDEX downloads it too), so this can't use checkIfExists: true.
+	def bwa_fasta_file = file(params.contam_ref_fasta)
 	def existing_index = ['amb','ann','bwt','pac','sa'].collect { file("${params.contam_ref_fasta}.${it}") }
-	if (existing_index.every { it.exists() }) {
+	if (bwa_fasta_file.exists() && existing_index.every { it.exists() }) {
 		CH_bwa_fasta = channel.value(bwa_fasta_file)
 		CH_bwa_index = channel.value(existing_index)
 	} else {
-		BWA_INDEX(channel.value(bwa_fasta_file))
+		log.info "Reference fasta + BWA index not found at ${params.contam_ref_fasta} — downloading from Zenodo (~8GB, DOI 10.5281/zenodo.21682938). This is a one-time cost; future runs will reuse the downloaded files automatically."
+		BWA_INDEX()
 		CH_bwa_fasta = BWA_INDEX.out.fasta
 		CH_bwa_index = BWA_INDEX.out.index
 	}
@@ -92,13 +100,17 @@ workflow {
 		blast_db_ready = file("${params.contam_ref_fasta}.nhr").exists()
 	}
 	if (blast_db_ready) {
-		CH_blast_fasta = channel.value(bwa_fasta_file)
+		CH_blast_fasta = CH_bwa_fasta
 		// Glob covers both single-volume (<fasta>.nhr) and multi-volume (<fasta>.nal,
 		// <fasta>.00.nhr, ...) layouts without hand-maintaining BLAST's version-dependent
 		// extension list, the way the BWA branch above can with its fixed 5 extensions.
 		CH_blast_index = channel.value(file("${params.contam_ref_fasta}*.n??"))
 	} else {
-		BLAST_INDEX(channel.value(bwa_fasta_file))
+		// CH_bwa_fasta (not the raw bwa_fasta_file variable) so this properly waits on
+		// BWA_INDEX's download finishing when the fasta doesn't exist yet, instead of
+		// just hoping it's ready in time from being placed earlier in the script.
+		log.info "BLAST db not found next to ${params.contam_ref_fasta} — building it now. This is a one-time cost; future runs will reuse it automatically."
+		BLAST_INDEX(CH_bwa_fasta)
 		CH_blast_fasta = BLAST_INDEX.out.fasta
 		CH_blast_index = BLAST_INDEX.out.index
 	}
@@ -255,27 +267,48 @@ process DEINTERLEAVE {
 	""" }
 
 process BWA_INDEX {
-    tag "BWA indexing ref contaminants"
-    container 'quay.io/biocontainers/bwa:0.7.17--h5bf99c6_8'
-    // Persist the index next to the reference itself so future runs (and other
-    // projects pointed at the same contam_ref_fasta) find it via the auto-detect check
-    // in the workflow block instead of rebuilding it. enabled: !workflow.stubRun keeps
-    // stub output (see `stub:` below) from ever landing in this shared external directory.
-    publishDir { file(params.contam_ref_fasta).getParent() }, pattern: "*.{amb,ann,bwt,pac,sa}", mode: 'copy', enabled: !workflow.stubRun
-    input:
-    path fasta
-
+    tag "downloading ref contaminant + BWA index from Zenodo"
+    container 'curlimages/curl:8.21.0'
+    containerOptions '--entrypoint ""'
+    shell '/bin/sh', '-ue'
+    // Persist both next to contam_ref_fasta so future runs (and other projects pointed
+    // at the same path) find them via the auto-detect check instead of re-downloading.
+    // enabled: !workflow.stubRun keeps stub output from landing in this shared directory.
+    publishDir { file(params.contam_ref_fasta).getParent() }, mode: 'copy', enabled: !workflow.stubRun
+    cache false
     output:
-    path("${fasta}.*"), emit: index
-    path(fasta),        emit: fasta
+    path("${file(params.contam_ref_fasta).getName()}"), emit: fasta
+    path("${file(params.contam_ref_fasta).getName()}.{amb,ann,bwt,pac,sa}"), emit: index
 
     script:
+    def base = file(params.contam_ref_fasta).getName()
+    // DOI 10.5281/zenodo.21682938 — "GORG Dark - Reference Contaminant Dataset": the
+    // exact GRCh38_AG665_mm10.fa + prebuilt BWA index this pipeline already expects.
+    // All 6 files are zip archives, each wrapping the real, already-decompressed file
+    // under its real name (e.g. fetching "<base>.ann.zip" returns a zip whose sole
+    // entry is literally "<base>.ann"). MD5s below are Zenodo's published checksums of
+    // the .zip files themselves, checked before extracting so a corrupt/partial
+    // download fails loudly instead of silently producing a broken reference.
     """
-    bwa index $fasta
+    set -e
+    fetch() {
+        curl -sL -o "\$1" "https://zenodo.org/api/records/21682938/files/\$1/content"
+        echo "\$2  \$1" | md5sum -c -
+        unzip -oq "\$1"
+        rm "\$1"
+    }
+    fetch "${base}.zip"     262152088a82f34416c9e30e142cab9d
+    fetch "${base}.amb.zip" d22f375cd7f16768f99b22c005b1b452
+    fetch "${base}.ann.zip" 66da9fa8ab74c58e87f57cfa5dc087a2
+    fetch "${base}.bwt.zip" cb0be188a3dfb8bac70b7d8f16dd61e5
+    fetch "${base}.pac.zip" 66722c0f8f463d790e6cdb99f960e99f
+    fetch "${base}.sa.zip"  c16b36eea4b1f75761bda8ed3e62bea5
     """
     stub:
+    // `base` above is local to the script: closure, not visible here — recompute inline
+    // (same reason output: does above rather than referencing a shared variable).
     """
-    touch ${fasta}.amb ${fasta}.ann ${fasta}.bwt ${fasta}.pac ${fasta}.sa
+    touch ${file(params.contam_ref_fasta).getName()}{,.amb,.ann,.bwt,.pac,.sa}
     """
 }
 
@@ -287,6 +320,10 @@ process BLAST_INDEX {
     // enabled: !workflow.stubRun guard as BWA_INDEX — this is exactly what leaked
     // 0-byte stub .nhr/.nin/.nsq files into the real reference directory before.
     publishDir { file(params.contam_ref_fasta).getParent() }, pattern: "${file(params.contam_ref_fasta).getName()}.*", mode: 'copy', enabled: !workflow.stubRun
+    // Same reasoning as BWA_INDEX: the outer workflow-level check (not Nextflow's task
+    // cache) is what avoids redundant rebuilds, so disabling caching here costs nothing
+    // and closes off stub-run/real-run cache cross-contamination.
+    cache false
     input:
     path fasta
 
