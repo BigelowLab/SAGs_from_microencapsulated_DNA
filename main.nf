@@ -311,8 +311,17 @@ process BWA_INDEX {
     stub:
     // `base` above is local to the script: closure, not visible here — recompute inline
     // (same reason output: does above rather than referencing a shared variable).
+    // Explicit filenames, not brace expansion ({,.amb,...}) — that's a bash-ism, and
+    // this process's shell is /bin/sh (BusyBox ash, no /bin/bash in this container).
+    // Under sh, the unexpanded brace expression became one literal filename instead of
+    // six, so `touch` exited 0 while never actually creating the expected output.
     """
-    touch ${file(params.contam_ref_fasta).getName()}{,.amb,.ann,.bwt,.pac,.sa}
+    touch ${file(params.contam_ref_fasta).getName()} \
+          ${file(params.contam_ref_fasta).getName()}.amb \
+          ${file(params.contam_ref_fasta).getName()}.ann \
+          ${file(params.contam_ref_fasta).getName()}.bwt \
+          ${file(params.contam_ref_fasta).getName()}.pac \
+          ${file(params.contam_ref_fasta).getName()}.sa
     """
 }
 
