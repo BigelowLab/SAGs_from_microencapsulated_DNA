@@ -269,7 +269,11 @@ process DEINTERLEAVE {
 process BWA_INDEX {
     tag "downloading ref contaminant + BWA index from Zenodo"
     container 'curlimages/curl:8.21.0'
-    containerOptions '--entrypoint ""'
+    // curlimages/curl deliberately runs as a non-root user by default. Docker Desktop's
+    // bind-mount layer on macOS is lenient about that mismatch against the host-owned
+    // work dir, but real Linux Docker (GitHub Actions runners, HPC nodes) enforces it for
+    // real and this container cannot write its own output without -u root.
+    containerOptions '--entrypoint "" -u root'
     shell '/bin/sh', '-ue'
     // Persist both next to contam_ref_fasta so future runs (and other projects pointed
     // at the same path) find them via the auto-detect check instead of re-downloading.
@@ -343,9 +347,14 @@ process BLAST_INDEX {
 
 process CONTAM_READ_FINDER {
     tag "${ID}"
-    memory '11.GB'
-    maxForks 1 // allows only 1 to run at a time. This protects our memory limit.
-    errorStrategy 'terminate'
+    // Retries with more memory instead of a fixed ceiling, so this adapts to whatever's
+    // actually available (a laptop, CI, an HPC node) rather than encoding one machine's
+    // Docker Desktop allocation. 5.GB is where this genuinely OOM'd once for real against
+    // this reference; attempt 2 (10GB) lands right around where it's since run reliably.
+    memory { 5.GB * task.attempt }
+    maxForks 1 // keeps memory-heavy retries from stacking across samples regardless of environment
+    errorStrategy { task.exitStatus in [137, 140] ? 'retry' : 'terminate' }
+    maxRetries 3
     container 'quay.io/biocontainers/bwa:0.7.17--h5bf99c6_8'
     input:
         tuple val(ID), path(norm1), path(norm2)
@@ -498,8 +507,13 @@ process CHECKM_v1_1_9 {
     tag "${ID} estimate completeness"
     // --reduced_tree is a memory-saver for single-genome input, but it can be inaccurate for some lineages.
     // If memory is NOT limiting, run CHECKM without --reduced_tree.
-    memory '11.GB'
-    maxForks 1 // allows only 1 to run at a time. This protects our memory limit.
+    // Retries with more memory instead of a fixed ceiling — see CONTAM_READ_FINDER for
+    // the same pattern and why. --reduced_tree's own guarantee is only "<16GB", so this
+    // covers that range across two attempts rather than assuming a single number.
+    memory { 6.GB * task.attempt }
+    maxForks 1 // keeps memory-heavy retries from stacking across samples regardless of environment
+    errorStrategy { task.exitStatus in [137, 140] ? 'retry' : 'terminate' }
+    maxRetries 3
     container 'quay.io/biocontainers/checkm-genome:1.1.9--pyhdfd78af_0'
     publishDir { "${params.output}/${ID}/QC_${ID}" }, mode: params.publishmode
     input: tuple val(ID), path(contigs)
