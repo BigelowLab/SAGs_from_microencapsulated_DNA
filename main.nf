@@ -22,16 +22,10 @@ params.assembly_righttrim = '200'
 params.assembly_lefttrim = '200'
 
 //#     DECONTAMINATION
-// Relative + gitignored: a fresh clone has nothing here, and BWA_INDEX/BLAST_INDEX
-// download the fasta + prebuilt indexes from Zenodo (DOI 10.5281/zenodo.21682938) into
-// this path automatically on first run — no manual setup needed. Override with
-// --contam_ref_fasta to point at an already-populated location instead (e.g. a shared
-// path on a cluster) and avoid re-downloading the ~8GB reference per clone.
 params.contam_ref_fasta = "./reference/GRCh38_AG665_mm10.fa"
 params.contam_min_length=100 // for BLASTn on contigs
 params.contam_min_percid=95.0 // for BLASTn on contigs
-// BWA/BLAST indexes are auto-detected next to contam_ref_fasta; the download only runs
-// when they (or the fasta itself) are missing.
+// BWA/BLAST indexes are auto-detected next to contam_ref_fasta; the download only runs when they (or the fasta itself) are missing.
 
 workflow {
 
@@ -83,17 +77,11 @@ workflow {
 	// Build the BLAST db once, reusing an existing one next to contam_ref_fasta if present.
 	// Triggered here (early) rather than next to CONTAM_CONTIG_FINDER so it has the whole
 	// read-processing + assembly pipeline to finish in before it's actually needed.
-	// A large reference gets split into volumes by makeblastdb, so only a top-level .nal
-	// alias file is written next to contam_ref_fasta — check that its listed volumes
-	// actually exist too; an alias file by itself doesn't mean the db is usable.
 	def nal_file = file("${params.contam_ref_fasta}.nal")
 	def blast_db_ready
 	if (nal_file.exists()) {
 		def dblist = (nal_file.text =~ /(?m)^DBLIST\s+(.+)$/)
 		def volumes = dblist ? dblist[0][1].replaceAll('"', '').trim().split(/\s+/) : []
-		// DBLIST entries are bare filenames (no directory) — resolve them against
-		// contam_ref_fasta's own directory, not wherever `nextflow run` was launched
-		// from, or this always evaluates false and BLAST_INDEX reruns every time.
 		def ref_dir = nal_file.getParent()
 		blast_db_ready = volumes.size() > 0 && volumes.every { file("${ref_dir}/${it}.nhr").exists() }
 	} else {
@@ -106,9 +94,6 @@ workflow {
 		// extension list, the way the BWA branch above can with its fixed 5 extensions.
 		CH_blast_index = channel.value(file("${params.contam_ref_fasta}*.n??"))
 	} else {
-		// CH_bwa_fasta (not the raw bwa_fasta_file variable) so this properly waits on
-		// BWA_INDEX's download finishing when the fasta doesn't exist yet, instead of
-		// just hoping it's ready in time from being placed earlier in the script.
 		log.info "BLAST db not found next to ${params.contam_ref_fasta} — building it now. This is a one-time cost; future runs will reuse it automatically."
 		BLAST_INDEX(CH_bwa_fasta)
 		CH_blast_fasta = BLAST_INDEX.out.fasta
@@ -134,8 +119,7 @@ workflow {
     CH_count_sag_stats = MEASURE_SAG.out.countfile.collectFile(name: '8_sag_stats.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false)
 
     CHECKM_v1_1_9(TRIM_CONTIGS.out.trimmed_contigs)
-    // .map() pulls the 'Completeness' column out of CheckM's --tab_table TSV directly in
-    // Groovy (no separate PARSE_CHECKM process/container needed for three lines of pandas).
+    // .map() pulls the 'Completeness' column out of CheckM's --tab_table TSV directly in Groovy
     CH_count_checkm = CHECKM_v1_1_9.out
         .map { ID, checkm_dir ->
             def lines = file("${checkm_dir}/completeness_${ID}.tsv").readLines()
@@ -176,8 +160,7 @@ process FASTQC_v0_11_9 {
         fastqc -t !{task.cpus} -q !{r1} !{r2} --noextract
         '''
     stub:
-    // Neither .qc nor .html is consumed downstream (only .countfile is), so these just
-    // need to exist to satisfy the declared outputs.
+    // FOR TESTING: makes empty *zip and *html files so downstream processes pick up immediately without waiting for real FastQC to run (which is slow and not needed for stub testing)
     """
     touch stub_fastqc.zip stub_fastqc.html
     echo "Raw_readcount,20,${ID}" >> "1_raw_${ID}.count"
@@ -199,8 +182,7 @@ process TRIMMOMATIC_v0_32 {
         echo "Trimmed_readcount,$(expr $(zcat trimmed_!{ID}_r1.fastq.gz | wc -l) / 4 + $(zcat trimmed_!{ID}_r2.fastq.gz | wc -l) / 4),!{ID}" > "2_trimmed_!{ID}.count"
         '''
     stub:
-    // First 10 real reads from each of r1/r2 — becomes COMPLEXITY_FILTER's stub input,
-    // which genuinely zcats/subsets it, so this needs to be valid gzipped fastq, not empty.
+    // FOR TESTING: makes dummy trimmed_*.fastq.gz files with 10 read pairs each (40 lines) so downstream processes can run on stub data
     """
     zcat ${r1} | head -40 | gzip > trimmed_${ID}_r1.fastq.gz
     zcat ${r2} | head -40 | gzip > trimmed_${ID}_r2.fastq.gz
@@ -216,9 +198,7 @@ process COMPLEXITY_FILTER {
     output: tuple val(ID), path("pe_${ID}.fastq.gz"), emit: reads
     script: template 'complexity_filter.py'
     stub:
-    // First 10 real read pairs from r1/r2, properly interleaved: `paste - - - -`
-    // collapses each 4-line fastq record to one line, pasting the two collapsed
-    // streams side by side then expanding tabs back to newlines interleaves them.
+    // FOR TESTING: Makes a dummy pe_*.fastq.gz file with 10 read pairs (40 lines) so downstream processes can run on stub data
     """
     paste <(zcat ${r1} | head -40 | paste - - - -) <(zcat ${r2} | head -40 | paste - - - -) | tr '\\t' '\\n' | gzip > pe_${ID}.fastq.gz
     """ }
@@ -245,8 +225,7 @@ process KMERNORM_v1_0_0 {
         rm temp_paired.fastq
         '''
     stub:
-    // `paired` (from COMPLEXITY_FILTER's stub) is already real subsetted read data —
-    // just carry it forward under the expected output name rather than re-deriving it.
+    // FOR TESTING: Makes a dummy normalized_pe_*.fastq.gz file with 10 read pairs (40 lines) so downstream processes can run on stub data
     """
     cp ${paired} normalized_pe_${ID}.fastq.gz
     echo "Complexity_filtered_readcount,20,${ID}" >> 3_pe_${ID}.count
@@ -271,13 +250,10 @@ process BWA_INDEX {
     container 'curlimages/curl:8.21.0'
     // curlimages/curl deliberately runs as a non-root user by default. Docker Desktop's
     // bind-mount layer on macOS is lenient about that mismatch against the host-owned
-    // work dir, but real Linux Docker (GitHub Actions runners, HPC nodes) enforces it for
-    // real and this container cannot write its own output without -u root.
+    // work dir, but real Linux Docker enforces it, and this container cannot write its own output without -u root.
     containerOptions '--entrypoint "" -u root'
     shell '/bin/sh', '-ue'
-    // Persist both next to contam_ref_fasta so future runs (and other projects pointed
-    // at the same path) find them via the auto-detect check instead of re-downloading.
-    // enabled: !workflow.stubRun keeps stub output from landing in this shared directory.
+    // enabled: !workflow.stubRun keeps stub output from interfering with actual DB files.
     publishDir { file(params.contam_ref_fasta).getParent() }, mode: 'copy', enabled: !workflow.stubRun
     cache false
     output:
@@ -286,13 +262,6 @@ process BWA_INDEX {
 
     script:
     def base = file(params.contam_ref_fasta).getName()
-    // DOI 10.5281/zenodo.21682938 — "GORG Dark - Reference Contaminant Dataset": the
-    // exact GRCh38_AG665_mm10.fa + prebuilt BWA index this pipeline already expects.
-    // All 6 files are zip archives, each wrapping the real, already-decompressed file
-    // under its real name (e.g. fetching "<base>.ann.zip" returns a zip whose sole
-    // entry is literally "<base>.ann"). MD5s below are Zenodo's published checksums of
-    // the .zip files themselves, checked before extracting so a corrupt/partial
-    // download fails loudly instead of silently producing a broken reference.
     """
     set -e
     fetch() {
@@ -309,12 +278,7 @@ process BWA_INDEX {
     fetch "${base}.sa.zip"  c16b36eea4b1f75761bda8ed3e62bea5
     """
     stub:
-    // `base` above is local to the script: closure, not visible here — recompute inline
-    // (same reason output: does above rather than referencing a shared variable).
-    // Explicit filenames, not brace expansion ({,.amb,...}) — that's a bash-ism, and
-    // this process's shell is /bin/sh (BusyBox ash, no /bin/bash in this container).
-    // Under sh, the unexpanded brace expression became one literal filename instead of
-    // six, so `touch` exited 0 while never actually creating the expected output.
+    // FOR TESTING: Makes dummy DB files so downstream processes pick up immediately without waiting for real download to run (which is slow and not needed for stub testing)
     """
     touch ${file(params.contam_ref_fasta).getName()} \
           ${file(params.contam_ref_fasta).getName()}.amb \
@@ -329,13 +293,9 @@ process BLAST_INDEX {
     tag "makeblastdb on ref contaminants"
     container 'quay.io/biocontainers/blast:2.11.0--pl5262h3289130_1'
     // Persist the db next to the reference itself, same convention as BWA_INDEX, so
-    // future runs find it via the auto-detect check instead of rebuilding it. Same
-    // enabled: !workflow.stubRun guard as BWA_INDEX — this is exactly what leaked
-    // 0-byte stub .nhr/.nin/.nsq files into the real reference directory before.
+    // future runs find it via the auto-detect check instead of rebuilding it.
     publishDir { file(params.contam_ref_fasta).getParent() }, pattern: "${file(params.contam_ref_fasta).getName()}.*", mode: 'copy', enabled: !workflow.stubRun
-    // Same reasoning as BWA_INDEX: the outer workflow-level check (not Nextflow's task
-    // cache) is what avoids redundant rebuilds, so disabling caching here costs nothing
-    // and closes off stub-run/real-run cache cross-contamination.
+    // Fancy 'enabled: !workflow.stubRun' guard above is enough to keep stub output from interfering with real DB files
     cache false
     input:
     path fasta
@@ -349,6 +309,7 @@ process BLAST_INDEX {
     makeblastdb -in $fasta -dbtype nucl -out $fasta -title $fasta
     """
     stub:
+    // FOR TESTING: Makes dummy BLAST db files so downstream processes pick up immediately without waiting for real makeblastdb to run (which is slow and not needed for stub testing)
     """
     touch ${fasta}.nhr ${fasta}.nin ${fasta}.nsq
     """
@@ -381,6 +342,7 @@ process CONTAM_READ_FINDER {
     bwa sampe !{fasta} norm_!{ID}_r1.fastq.sai norm_!{ID}_r2.fastq.sai !{norm1} !{norm2} > contam_!{ID}.sam
     '''
     stub:
+    // FOR TESTING: Makes dummy norm_*.sai and contam_*.sam files so downstream processes pick up immediately without waiting for real BWA to run (which is slow and not needed for stub testing)
     """
     touch norm_${ID}_r1.fastq.sai norm_${ID}_r2.fastq.sai
     printf '@HD\\tVN:1.6\\tSO:unsorted\\n' > contam_${ID}.sam
@@ -433,6 +395,7 @@ process SPADES_v3_15_2 {
         echo "Raw_contig_count,$(grep -c '>' spades_!{ID}/contigs.fasta),!{ID}" > 6_all_contigs_!{ID}.count
         '''
     stub:
+    // FOR TESTING: Makes a dummy 0_all_contigs_*.fasta file with one contig so downstream processes can run on stub data
     """
     printf '>stub_contig_1\\n' > 0_all_contigs_${ID}.fasta
     yes ACGT | head -400 | tr -d '\\n' >> 0_all_contigs_${ID}.fasta
@@ -492,8 +455,7 @@ process CONTAM_CONTIG_FINDER {
         rm tmp_header.tsv tmp_1_blast.tsv
         '''
     stub:
-    // Header-only, matching what a real run with zero blast hits produces — keeps
-    // CONTAM_CONTIG_REMOVER's real (unstubbed) parser downstream working normally.
+    // FOR TESTING: Makes a dummy contig_blast_*.tsv file with the correct header so downstream processes can run on stub data 
     """
     echo -e 'Query Seq-id\tSubject Seq-id\tPercentage of identical matches\tAlignment length\tNumber of mismatches\tNumber of gap openings\tStart of alignment in query\tEnd of alignment in query\tStart of alignment in subject\tEnd of alignment in subject\tExpect value\tBit score\tAll subject Seq-id(s)\tRaw score\tNumber of identical matches\tNumber of positive-scoring matches\tTotal number of gaps\tPercentage of positive-scoring matches\tQuery frame\tSubject frame\tAligned part of query sequence\tAligned part of subject sequence\tQuery sequence length\tSubject sequence length\tAll Subject Title(s)' > contig_blast_${ID}.tsv
     """ }
