@@ -46,9 +46,9 @@ Runs the full pipeline wiring end-to-end against tiny bundled synthetic reads in
 
 ```bash
 nextflow run main.nf                               # normal run, reads from ./input/, writes to ./results/
+nextflow run main.nf -resume                        # resume after a failure, reusing cached results
 nextflow run main.nf --dev                          # only process the first sample found
 nextflow run main.nf --indir <dir> --output <dir>   # override input/output locations
-nextflow run main.nf -resume                        # resume after a failure, reusing cached results
 ```
 
 ### Input naming convention
