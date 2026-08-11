@@ -390,7 +390,6 @@ process CONTAM_READ_REPORTER {
 
 process CONTAM_READ_REMOVER {
     tag "${ID}"
-    errorStrategy { task.exitStatus in [0] ? 'ignore' : 'retry' }
     container 'brwnj/kmernorm:v1.0.0'
     publishDir { "${params.output}/${ID}/reads_${ID}" }, pattern: "contamfiltered_pe_*.fastq.gz", mode: 'copy'
     input: tuple val(ID), path(sam_contam), path(norm)
