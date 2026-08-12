@@ -1,6 +1,6 @@
 # GORG-Dark SAG Assembly
 
-![Pipeline smoke test](https://github.com/ggavelis/GORG-Dark-SAG-assembly/actions/workflows/stub-run.yml/badge.svg)
+![Pipeline smoke test](https://github.com/BigelowLab/GORG-Dark-SAG-assembly/actions/workflows/stub-run.yml/badge.svg)
 
 A Nextflow pipeline that takes paired-end Illumina reads from single-amplified genomes (SAGs) through to decontaminated assemblies: quality control → trimming → complexity filtering → k-mer normalization → host/contaminant read removal → assembly → contig trimming/deduplication → host/contaminant contig removal → genome completeness estimation → a single per-sample stats table.
 
@@ -16,7 +16,7 @@ Built for the GORG-Dark project (single-cell genomics of deep-ocean prokaryotes)
 ## Quick start
 
 ```bash
-git clone https://github.com/ggavelis/GORG-Dark-SAG-assembly.git
+git clone https://github.com/BigelowLab/GORG-Dark-SAG-assembly.git
 cd GORG-Dark-SAG-assembly
 ```
 
