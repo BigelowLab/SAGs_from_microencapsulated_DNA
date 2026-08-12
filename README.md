@@ -9,8 +9,9 @@ Built for the GORG-Dark project (single-cell genomics of deep-ocean prokaryotes)
 ## Requirements
 
 - [Nextflow](https://www.nextflow.io/) (DSL2)
-- [Docker](https://www.docker.com/), running locally — every process executes in its own container, no local tool installation needed
+- [Docker](https://www.docker.com/), running locally — every process except `KMERNORM_v1_0_0` executes in its own container, no local tool installation needed
 - Java (required by Nextflow itself)
+- `kmernorm` on `PATH` — see [Installing kmernorm](#installing-kmernorm) below. Not bundled in a container; you provide your own build.
 
 ## Quick start
 
@@ -95,3 +96,17 @@ That download (fasta + prebuilt BWA index) is a one-time cost of a few GB; a mat
 ## Continuous integration
 
 Every push and pull request runs a fast wiring smoke test via GitHub Actions (`.github/workflows/stub-run.yml`) — see [Try it without any data first](#try-it-without-any-data-first) above for the equivalent local command.
+
+## Installing kmernorm
+
+`KMERNORM_v1_0_0` is the one step that does not run in a container. The underlying `kmernorm` tool (by Mingkun Li) has no license anywhere — not on its SourceForge page, not in its source archive — so this pipeline does not bundle it or depend on any third-party Docker image wrapping it. You need to build and provide your own copy on `PATH` before running the pipeline for real (`-stub-run` does not need it — see above).
+
+```bash
+curl -sL -o kmernorm.tar https://sourceforge.net/projects/kmernorm/files/latest/download
+tar xf kmernorm.tar && make
+cp kmernorm /opt/homebrew/bin/   # or anywhere else already on PATH
+```
+
+Installing and running this source is entirely at your own discretion — confirm license terms and satisfy yourself of the tool's suitability independently; this pipeline doesn't warrant or vouch for it. See `THIRD_PARTY_LICENSES.md` for more.
+
+> **Warning — do not build kmernorm on macOS.** A macOS/ARM64 build of this exact source silently corrupts paired-end read ordering (verified: R1/R2 pairs get mismatched partway through real data, with no error at build or run time — it only surfaces later as a cryptic `bwa` "paired reads have different names" failure). The identical source built for Linux/x86_64 produces correctly paired output on the same data — this is specific to compiling on Mac. Build and run `kmernorm` on Linux until this is root-caused.

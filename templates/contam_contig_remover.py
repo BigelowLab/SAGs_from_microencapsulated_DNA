@@ -7,12 +7,20 @@ PATH_blast_tsv = "${blast_tsv}"
 PATH_contigs = "${contigs}"
 
 import sys
-import six
 import csv
 import os.path as op
 import os.path
 from Bio import SeqIO
 from itertools import groupby
+
+# toolshed/interlap aren't in the biopython image this runs in - install them here rather
+# than via a `beforeScript` directive, which runs on the host (not inside the container)
+# for the local executor this pipeline uses.
+import subprocess
+subprocess.run(
+    [sys.executable, "-m", "pip", "install", "--quiet", "toolshed==0.4.8", "interlap==0.2.7"],
+    check=True,
+)
 from toolshed import nopen, reader
 from interlap import InterLap
 
@@ -45,10 +53,10 @@ def overlap_distance(coords):
 	return sum([j - i + 1 for (i, j) in joined_intervals])
 def blast_results_filter(blast_tsv, fastx_file, out_file, contam_outfile, count_file):
 	terms = ['homo sapiens', 'Homo sapiens', 'Homo_sapiens', 'human dna sequence', 'mus musculus', 'Delftia acidovorans', 'Achromobacter xylosoxidans', 'Stenotrophomonas maltophilia', 'Bradyrhizobium', 'AG-665_NODE_', 'AG-SIM-NEG_', 'AH-847', 'Cutibacterium', 'Malassezia']
-	if isinstance(blast_tsv, six.string_types):
+	if isinstance(blast_tsv, str):
 		blast_tsv = [blast_tsv]
 	print("Filtering %s based on BLAST results." % fastx_file)
-	if isinstance(terms, six.string_types):
+	if isinstance(terms, str):
 		terms = [terms.lower()]
 	else:
 		terms = [t.lower() for t in terms]

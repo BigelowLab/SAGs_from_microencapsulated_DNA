@@ -10,14 +10,12 @@ NUM_threads=int("${task.cpus}")
 import os
 import os.path as op
 import shutil
-import six
 import tempfile
 import gzip
 from contextlib import contextmanager
 from itertools import groupby
 import contextlib
 import itertools
-import parmap
 import time
 from pysam import FastxFile
 import multiprocessing
@@ -25,9 +23,10 @@ import multiprocessing
 ##################### SUPPORT FUNCTIONS ##################################
 def multiprocess(f, iterable, *args, **kwargs):
 	chunksize = kwargs.pop('chunksize', 1000)
+	pool = kwargs.pop('pool')
 	key = kwargs.pop('key', lambda k, l=itertools.count(): next(l)//chunksize)
 	for k, g in itertools.groupby(iterable, key=key):
-		yield parmap.map(f, g, *args, **kwargs)
+		yield pool.starmap(f, [(item,) + args for item in g])
 @contextlib.contextmanager
 def file_transaction(*rollback_files):
 	exts = {".vcf": ".idx", ".bam": ".bai", "vcf.gz": ".tbi", ".fastq.gz": ".count"}
@@ -49,7 +48,7 @@ def file_transaction(*rollback_files):
 		for safe, orig in zip(safe_names, orig_names):
 			if os.path.exists(safe):
 				shutil.move(safe, orig)
-				for check_ext, check_idx in six.iteritems(exts):
+				for check_ext, check_idx in exts.items():
 					if safe.endswith(check_ext):
 						safe_idx = safe + check_idx
 						if os.path.exists(safe_idx):
@@ -70,7 +69,7 @@ def remove_files(fnames):
 def _flatten_plus_safe(rollback_files):
 	tx_files, orig_files = [], []
 	for fnames in rollback_files:
-		if isinstance(fnames, six.string_types):
+		if isinstance(fnames, str):
 			fnames = [fnames]
 		for fname in fnames:
 			basedir = safe_makedir(os.path.dirname(fname))

@@ -1,4 +1,21 @@
 #!/usr/bin/env nextflow
+//
+// GORG-Dark SAG Assembly
+// Copyright (C) 2026  Greg Gavelis
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+//
 nextflow.enable.dsl=2
 
 params.indir ="./input/"
@@ -92,7 +109,7 @@ workflow {
 		// Glob covers both single-volume (<fasta>.nhr) and multi-volume (<fasta>.nal,
 		// <fasta>.00.nhr, ...) layouts without hand-maintaining BLAST's version-dependent
 		// extension list, the way the BWA branch above can with its fixed 5 extensions.
-		CH_blast_index = channel.value(file("${params.contam_ref_fasta}*.n??"))
+		CH_blast_index = channel.value(files("${params.contam_ref_fasta}*.n??"))
 	} else {
 		log.info "BLAST db not found next to ${params.contam_ref_fasta} — building it now. This is a one-time cost; future runs will reuse it automatically."
 		BLAST_INDEX(CH_bwa_fasta)
@@ -191,8 +208,10 @@ process TRIMMOMATIC_v0_32 {
 
 process COMPLEXITY_FILTER {
     tag "${ID}"
-    //container 'complexity-filter-env:latest'
-    container 'brwnj/kmernorm:v1.0.0'
+    // Only real dependency is pysam (parmap was replaced with plain multiprocessing.Pool
+    // below, and six was replaced with stdlib equivalents) - a stock biocontainers image
+    // covers it with no extra install needed.
+    container 'quay.io/biocontainers/pysam:0.24.0--py312hf5ad864_1'
     publishDir { "${params.output}/${ID}/reads_${ID}" }, pattern: "*fastq.gz", mode: params.publishmode
     input: tuple val(ID), path(r1), path(r2)
     output: tuple val(ID), path("pe_${ID}.fastq.gz"), emit: reads
@@ -205,7 +224,9 @@ process COMPLEXITY_FILTER {
 
 process KMERNORM_v1_0_0 {
     tag "${ID}"
-    container 'brwnj/kmernorm:v1.0.0' // 'brwnj/kmernorm:v1.1.0'
+    // Installing and providing `kmernorm` (or other normalization software) on PATH is the user's own responsibility
+    container 'brwnj/kmernorm:v1.0.0'
+    //container null
     publishDir { "${params.output}/${ID}/reads_${ID}"}, pattern: "normalized_pe_*.fastq.gz", mode: params.publishmode
     publishDir { "${params.output}/sample_tracking" }, pattern: "*count", mode: params.publishmode
     input: tuple val(ID), path(paired)
@@ -370,7 +391,8 @@ process CONTAM_READ_REPORTER {
 
 process CONTAM_READ_REMOVER {
     tag "${ID}"
-    container 'brwnj/kmernorm:v1.0.0'
+    // Only real dependency is pysam (six was replaced with stdlib equivalents).
+    container 'quay.io/biocontainers/pysam:0.24.0--py312hf5ad864_1'
     publishDir { "${params.output}/${ID}/reads_${ID}" }, pattern: "contamfiltered_pe_*.fastq.gz", mode: 'copy'
     input: tuple val(ID), path(sam_contam), path(norm)
     output:
@@ -406,7 +428,7 @@ process SPADES_v3_15_2 {
 process TRIM_CONTIGS {
     errorStrategy 'finish'
     tag "${ID}"
-    container 'brwnj/kmernorm:v1.0.0'
+    container 'quay.io/biocontainers/biopython:1.84'
     publishDir { "${params.output}/${ID}/intermediate_assemblies_${ID}" }, pattern: "*.fasta", mode: params.publishmode
     input: tuple val(ID), path(contigs)
     output:
@@ -419,14 +441,14 @@ process TRIM_CONTIGS {
 
 process MEASURE_SAG{
     tag "${ID}"
-    container 'brwnj/kmernorm:v1.0.0'
+    container 'quay.io/biocontainers/biopython:1.84'
     publishDir { "${params.output}/${ID}/logs_${ID}" }
     input: tuple val(ID), path(contigs)
     output: path("sag_stats_${ID}.csv"), emit: countfile
     script:
     """
     #!/usr/bin/env python
-    from Bio import SeqIO; from Bio.SeqUtils import GC
+    from Bio import SeqIO; from Bio.SeqUtils import gc_fraction
     max_contig_length = 0; STR_all_seq = ''
     for record in SeqIO.parse("${contigs}", "fasta"):
         STR_all_seq = STR_all_seq + record.seq          # read in the DNA, 1 contig at a time
@@ -435,7 +457,9 @@ process MEASURE_SAG{
     out=open("sag_stats_${ID}.csv", "a")
     print("Max_contig_length", str(max_contig_length), "${ID}", sep=",", file=out)
     print("Final_assembly_length", str(len(STR_all_seq)), "${ID}", sep=",", file=out)
-    print("GC_content", str(round(GC(STR_all_seq),2)), "${ID}", sep=",", file=out)
+    # gc_fraction() replaces the older, since-removed Bio.SeqUtils.GC(); it returns a
+    # 0-1 fraction rather than a 0-100 percentage, so scale to match the old output.
+    print("GC_content", str(round(gc_fraction(STR_all_seq)*100,2)), "${ID}", sep=",", file=out)
     out.close()
     """  }
 
@@ -462,7 +486,15 @@ process CONTAM_CONTIG_FINDER {
 
 process CONTAM_CONTIG_REMOVER {
     tag "${ID}"
-    container 'brwnj/kmernorm:v1.0.0'
+    // Needs Biopython + toolshed + interlap. No public image bundles all three, so this
+    // takes the closest existing public image (Biopython) and installs the two small,
+    // pure-Python, no-compiled-deps packages on top at task start - still an existing
+    // public image, not a custom one we build/publish ourselves. Installed from inside
+    // the template script itself (see templates/contam_contig_remover.py), not via
+    // beforeScript - beforeScript runs on the HOST, not inside the container, for the
+    // local executor this pipeline uses, so pip installed there would need to exist on
+    // the host rather than in the image.
+    container 'quay.io/biocontainers/biopython:1.84'
     publishDir { "${params.output}/${ID}/intermediate_assemblies_${ID}" }, pattern: "4b_contam_contigs_*.fasta"
     publishDir { "${params.output}/${ID}" }, pattern: "SCGC_*_contigs.fasta" 
     input:
@@ -503,7 +535,8 @@ process CHECKM_v1_1_9 {
     """ }
 
 process ASSEMBLY_STATS_TABULATOR {
-    container 'brwnj/kmernorm:v1.0.0'
+    // Only real dependencies are pandas + numpy, and numpy comes bundled with this image.
+    container 'quay.io/biocontainers/pandas:2.2.1'
     publishDir "${params.output}"
     input: path(COUNTS_TXT)
     output: path("assembly_stats.csv")
@@ -536,7 +569,7 @@ process ASSEMBLY_STATS_TABULATOR {
 
     DF_log = DF_log[LIST_col_order] # Reorder columns to match LIST_col_order
     ## Warn the user when the metrics are from a stub run, so they don't mistake them for real data.
-    DF_log = DF_log.applymap(lambda x: "${STUB_PREFIX}" + str(x))
+    DF_log = DF_log.map(lambda x: "${STUB_PREFIX}" + str(x))
     DF_log.to_csv(PATH_out, index=False)
     """
 

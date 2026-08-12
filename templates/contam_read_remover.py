@@ -5,8 +5,7 @@ PATH_sam_contam = "${sam_contam}"
 PATH_norm = "${norm}"
 
 import gzip
-import six
-from six.moves import zip_longest
+from itertools import zip_longest
 from pysam import FastxFile
 import os
 import os.path as op
@@ -15,7 +14,7 @@ from os.path import exists
 
 ################## ACCESSORY FUNCTIONS ####################
 def file_exists(fnames):
-	if isinstance(fnames, six.string_types):
+	if isinstance(fnames, str):
 		fnames = [fnames]
 	for f in fnames:
 		if not os.path.exists(f) or os.path.getsize(f) == 0:
