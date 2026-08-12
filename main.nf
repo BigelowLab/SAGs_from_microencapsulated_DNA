@@ -225,7 +225,6 @@ process COMPLEXITY_FILTER {
 process KMERNORM_v1_0_0 {
     tag "${ID}"
     // Installing and providing `kmernorm` (or other normalization software) on PATH is the user's own responsibility
-    container 'brwnj/kmernorm:v1.0.0'
     //container null
     publishDir { "${params.output}/${ID}/reads_${ID}"}, pattern: "normalized_pe_*.fastq.gz", mode: params.publishmode
     publishDir { "${params.output}/sample_tracking" }, pattern: "*count", mode: params.publishmode
@@ -372,7 +371,7 @@ process CONTAM_READ_FINDER {
 process CONTAM_READ_REPORTER {
     tag "${ID}"
     container 'quay.io/biocontainers/samtools:1.24--h9dcdb79_1'
-    publishDir { "${params.output}/${ID}/reads_${ID}" }, pattern: "contam_align_*.tsv", mode: params.publishmode
+    publishDir { "${params.output}/${ID}/QC_${ID}" }, pattern: "contam_align_*.tsv", mode: params.publishmode
     input: tuple val(ID), path(sai1), path(sai2), path(sam)
     output: tuple val(ID), path("contam_align_${ID}.tsv")
     shell:
