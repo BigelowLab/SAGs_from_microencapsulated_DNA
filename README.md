@@ -1,4 +1,4 @@
-# GORG-Dark SAG Assembly
+# SAGs from microencapsulated DNA
 
 ![Pipeline smoke test](https://github.com/BigelowLab/GORG-Dark-SAG-assembly/actions/workflows/stub-run.yml/badge.svg)
 
