@@ -48,7 +48,8 @@ Runs the full pipeline wiring end-to-end against tiny bundled synthetic Atrandi-
 ```bash
 nextflow run main.nf                               # normal run, reads from ./input/, writes to ./results/
 nextflow run main.nf -resume                        # resume after a failure, reusing cached results
-nextflow run main.nf --dev                          # only process the first sample found
+nextflow run main.nf --dev                          # only carry the first few capsules into assembly
+nextflow run main.nf --dev --dev_num_capsules 5      # same, but carry 5 capsules instead of the default 3
 nextflow run main.nf --indir <dir> --output <dir>   # override input/output locations
 ```
 
@@ -64,7 +65,8 @@ Each pair is an **Atrandi combinatorial-barcode pool**, not a single SAG — man
 |---|---|---|
 | `--indir` | `./input/` | Directory of input FASTQ files |
 | `--output` | `./results/` | Output directory |
-| `--dev` | `false` | Only carry the first capsule into assembly (every pool is still demultiplexed in full — see [Pipeline stages](#pipeline-stages)) |
+| `--dev` | `false` | Only carry `--dev_num_capsules` capsules into assembly (every pool is still demultiplexed in full — see [Pipeline stages](#pipeline-stages)) |
+| `--dev_num_capsules` | `3` | How many capsules `--dev` carries into assembly |
 | `--publishmode` | `symlink` | How outputs are linked into `--output` (`symlink`, `copy`, etc.) |
 | `--barcode_dir` | `./barcodes/` | Directory containing `bc{A,B,C,D}_24.txt`, the 4 Atrandi barcode lists |
 | `--read_threshold` | `3` | Minimum reads a barcode combo needs to be treated as a real capsule, not noise |

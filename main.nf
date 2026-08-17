@@ -23,6 +23,8 @@ params.output ="./results/"
 
 // MODES
 params.dev = false
+params.dev_num_capsules = 3 // how many capsules --dev carries into assembly
+params.viral = false
 
 // Defaults
 params.publishmode = 'symlink'
@@ -58,6 +60,13 @@ params.contam_ref_fasta = "./reference/GRCh38_AG665_mm10.fa"
 params.contam_min_length=100 // for BLASTn on contigs
 params.contam_min_percid=95.0 // for BLASTn on contigs
 // BWA/BLAST indexes are auto-detected next to contam_ref_fasta; the download only runs when they (or the fasta itself) are missing.
+
+//#    VIRAL
+PATH_hmm = "/mnt/databases/scgc/EggNOGdb/nog.hmm"
+PATH_eggnog_hmm = "/mnt/databases/scgc/EggNOGdb/nog.hmm"
+TSV_eggnog_annot = "/mnt/databases/scgc/EggNOGdb/nog_annotation.tsv"
+PATH_EggNOG_hmms_2_taxonomy = "/mnt/scgc/EggNOGdb/nog_annotation_virupdated.tsv" // Manually updated by Alaina to make some viral domains bacteria (since EggNOG misannotated those)
+
 
 workflow {
 
@@ -113,9 +122,18 @@ workflow {
         .filter { !it[0].contains('undetermined') }
 
     // NOTE: unlike the pre-demux CH_fastq this replaces, --dev now caps the number of
-    // *capsules* carried into assembly, not the number of pools demultiplexed — every pool
-    // still gets demuxed even in dev mode, since demux itself is cheap relative to assembly.
-    CH_fastq = params.dev ? CH_fastq.take(1) : CH_fastq
+    // *capsules* carried into assembly (params.dev_num_capsules), not the number of pools
+    // demultiplexed — every pool still gets demuxed even in dev mode, since demux itself is
+    // cheap relative to assembly.
+    // Sorted by ID before taking, so --dev picks the same capsules on every run rather than
+    // whatever order PHENIQS_DEMULTIPLEX's output glob happens to list them in (unspecified,
+    // and not sorted by anything meaningful like read count either way). Only sorted when
+    // --dev is actually on: toSortedList() has to collect the whole channel before re-emitting,
+    // which would otherwise force every capsule through demux before any of them could start
+    // assembly — fine for a small --dev subset, not something a full production run should pay.
+    CH_fastq = params.dev
+        ? CH_fastq.toSortedList { a, b -> a[0] <=> b[0] }.flatMap { it }.take(params.dev_num_capsules)
+        : CH_fastq
 
     TRIM_BARCODE(CH_fastq)
     CH_fastq = TRIM_BARCODE.out
@@ -189,14 +207,14 @@ workflow {
     TRIM_CONTIGS(SPADES_v3_15_2.out.passed)
     CH_count_trimmed_contigs = TRIM_CONTIGS.out.countfile.collectFile(name: '7_trimmed_contigcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false)
 
-    CONTAM_CONTIG_FINDER(TRIM_CONTIGS.out.trimmed_contigs, CH_blast_fasta, CH_blast_index)
+    CONTAM_CONTIG_FINDER(TRIM_CONTIGS.out.trimmed_contigs.filter({ it[1].size()>0 }), CH_blast_fasta, CH_blast_index) // don't move forward with empty contigs
     CONTAM_CONTIG_REMOVER(CONTAM_CONTIG_FINDER.out.join(TRIM_CONTIGS.out.length_passing_contigs))
     CH_count_final_contigs = CONTAM_CONTIG_REMOVER.out.countfile.collectFile(name: '8_final_contigcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false)
 
-    MEASURE_SAG(TRIM_CONTIGS.out.trimmed_contigs)
+    MEASURE_SAG(TRIM_CONTIGS.out.trimmed_contigs.filter({ it[1].size()>0 })) //don't run on empty contigs file
     CH_count_sag_stats = MEASURE_SAG.out.countfile.collectFile(name: '8_sag_stats.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false)
 
-    CHECKM_v1_1_9(TRIM_CONTIGS.out.trimmed_contigs)
+    CHECKM_v1_1_9(TRIM_CONTIGS.out.trimmed_contigs.filter({ it[1].size()>0 })) //don't run on empty contigs file
     // .map() pulls the 'Completeness' column out of CheckM's --tab_table TSV directly in Groovy
     CH_count_checkm = CHECKM_v1_1_9.out
         .map { ID, checkm_dir ->
@@ -216,6 +234,24 @@ workflow {
                 CH_count_final_contigs, CH_count_sag_stats, CH_count_checkm)
         .map { it.text.readLines().drop(1).join('\n') + '\n' }
         .collectFile(name: 'all_stepwise_counts.csv', storeDir: "${params.output}/sample_tracking", seed: COUNT_HEADER, cache: false, sort: false)
+
+    // Note, we run the viral pipeline on UNTRIMMED assemblies that have a max contig bigger than 1500.
+    if ( params.viral == true ) {
+
+        GENOMAD_v1_11_1(RENAME_CAPSULE_CONTIGS.out.filter({ maxContigLength(it[1]) > 1500 }))
+        PARSE_GENOMAD(GENOMAD_v1_11_1.out)
+        LOG_GENOMAD(PARSE_GENOMAD.out.collect())
+
+        // Alaina's viral vs. cellular predictor
+        PROTEINS_VS_EGGNOG(PROKKA_v1_14_6.out.faa.filter({ it[1].size()>0 })) // ignore .faa containing no proteins
+        EGGNOG_HITS_TO_CELL_OR_VIRUS(PROTEINS_VS_EGGNOG.out.filter({ it[1].size()>2350 })) // only keep outputs where hitsTXT file is over 13 lines long (<= 13 means no hits)
+        LOG_CELL_OR_VIRUS(EGGNOG_HITS_TO_CELL_OR_VIRUS.out.countfile.collect())
+
+        // Other viral tools
+        VIRALRECALL2(CH_ID_library_finalFasta)
+        VIRSORTER_v2_2_3(CH_ID_library_finalFasta)
+        DEEPVIRFINDER(CH_ID_library_finalFasta)
+        CHECKV_v1_0_1(CH_ID_library_finalFasta) }
 
     ASSEMBLY_STATS_TABULATOR(CH_all_counts)
 }
@@ -766,5 +802,318 @@ process ASSEMBLY_STATS_TABULATOR {
     DF_log = DF_log.map(lambda x: "${STUB_PREFIX}" + str(x))
     DF_log.to_csv(PATH_out, index=False)
     """
-
 }
+
+process LOG_GENOMAD{
+    publishDir "${DIR_out}/sample_tracking/3_assemblies", enabled: ( params.SPC == true ), mode: "copy"; errorStrategy = 'terminate'; queue="normal"
+    publishDir "${DIR_out}/sample_tracking/stepwise_counts", enabled: ( params.SPC == false ), mode: "copy"; errorStrategy = 'terminate'; queue="normal"
+    input: path(countfiles)
+    output: path("9i_genomad_stats.csv")
+    shell: ''' echo "Metric,Count,Sample_ID" > 9i_genomad_stats.csv; for LINE in !{countfiles}; do cat ${LINE} >> 9i_genomad_stats.csv; done ''' }
+
+process PARSE_GENOMAD {
+    tag "${ID}"
+    errorStrategy = "terminate"
+    container = 'brwnj/kmernorm:v1.0.0'
+    input: tuple val(ID), path(DIR_geNomad)
+    output: path("${ID}_geNomad_counts.csv")
+    script:
+    """
+    #!/usr/bin/env python
+    newline='\\n'
+    ID="${ID}"
+    PATH_out=ID+"_geNomad_counts.csv"
+
+    import pandas as pd
+    from glob import glob
+    from os.path import exists
+
+    PATH_plasmid_tsv = glob("${DIR_geNomad}/*_summary/*_plasmid_summary.tsv")[0]
+    PATH_virus_tsv = glob("${DIR_geNomad}/*_summary/*_virus_summary.tsv")[0]
+
+    NUM_virus = ''; LEN_virus = ''; NUM_plasmid = ''; LEN_plasmid = ''
+
+    if exists(PATH_virus_tsv): 
+        DF_virus = pd.read_csv(PATH_virus_tsv, sep="\t")
+        NUM_virus = len(DF_virus)
+        LEN_virus = DF_virus['length'].sum()
+    else: print("No file matching this pattern: ${DIR_geNomad}/*_summary/*_virus_summary.tsv" )
+    
+    if exists(PATH_plasmid_tsv):
+        DF_plasmid = pd.read_csv(PATH_plasmid_tsv, sep="\t")
+        NUM_plasmid = len(DF_plasmid)
+        LEN_plasmid = DF_plasmid['length'].sum()
+    else: print("No file matching this pattern: ${DIR_geNomad}/*_summary/*_plasmid_summary.tsv" )
+    
+    #  log results
+    with open(PATH_out, "w") as handle:
+        handle.write("Viral_bp_geNomad,"+str(LEN_virus)+","+ID+newline+"Viruses_geNomad,"+ str(NUM_virus) +","+ID+newline+"Plasmid_bp_geNomad,"+ str(LEN_plasmid) +","+ID+newline+'Plasmids_geNomad,' +str(NUM_plasmid)+','+ID+newline)
+    """ }
+
+
+process GENOMAD_v1_11_1 {
+  tag "${ID}"
+  errorStrategy = "terminate"
+  beforeScript 'module load anaconda; source activate /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/genomad_1.11.1'
+  // Camargo, A. P., Roux, S., Schulz, F., Babinski, M., Xu, Y., Hu, B., Chain, P. S. G., Nayfach, S., & Kyrpides, N. C. — Nature Biotechnology (2023), DOI: 10.1038/s41587-023-01953-y.
+  conda "/mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/genomad_1.11.1"
+  publishDir "${DIR_out}/${ID.tokenize('_')[0]}/${ID}/annotation_${ID}", enabled: ( params.SPC == true ), mode: "copy"
+  publishDir "${DIR_out}/${ID}/annotation_${ID}", enabled: ( params.SPC == false ), mode: "copy"
+  cpus=4
+  input: tuple val(ID), path(contigs)
+  output: tuple val(ID), path("geNomad_${ID}")
+  script: "genomad end-to-end --cleanup --threads ${task.cpus} --full-ictv-lineage --splits 8 ${contigs} geNomad_${ID} ${DB_genomad_v1_11_1}" }
+
+process PROTEINS_VS_EGGNOG {
+  // container='docker://quay.io/biocontainers/hmmer:3.3.2--h87f3376_2'
+  // installation notes: conda create --prefix /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/hmmer_3.4 -c conda-forge -c bioconda hmmer=3.4 pandas numpy gzip
+  beforeScript 'module load anaconda; source activate /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/hmmer_3.4'
+  conda '/mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/hmmer_3.4'
+  publishDir "${DIR_out}/${ID.tokenize('_')[0]}/${ID}/annotation_${ID}/eggNOG_${ID}", enabled: ( params.SPC == true ), mode: params.publishmode
+  publishDir "${DIR_out}/${ID}/annotation_${ID}/eggNOG_${ID}", enabled: ( params.SPC == false ), mode: params.publishmode
+  errorStrategy = 'ignore'
+  cpus=2 // 6
+  memory="50.GB"
+  tag "${ID}"
+ 
+  input: tuple val(ID), path(faa)
+ 
+  output: tuple val(ID), path("proteins_hmmsearch_v_EggNOGdb_${ID}.txt.gz")
+ 
+  script:
+  """
+  hmmsearch -E 0.00001 --cpu ${task.cpus} -o stdout.log --tblout proteins_hmmsearch_v_EggNOGdb_${ID}.txt ${PATH_hmm} ${faa}
+  rm stdout.log
+  gzip proteins_hmmsearch_v_EggNOGdb_${ID}.txt
+  """ }
+
+process EGGNOG_HITS_TO_CELL_OR_VIRUS {
+    container = 'brwnj/kmernorm:v1.0.0'
+    publishDir "${DIR_out}/${ID.tokenize('_')[0]}/${ID}/annotation_${ID}/eggNOG_${ID}", enabled: ( params.SPC == true ), mode: params.publishmode
+    publishDir "${DIR_out}/${ID}/annotation_${ID}/eggNOG_${ID}", enabled: ( params.SPC == false ), mode: params.publishmode
+    memory='50.GB'
+    errorStrategy = 'terminate'
+    input: tuple val(ID), path(hitsTXT)
+    output:
+        tuple val(ID), path("${ID}_proteins_hmmsearched_against_eggNOG.csv"), path("${ID}_eggnog.count"), emit: tsv                            
+        path("${ID}_eggnog.count"), emit: countfile
+    script:
+    """
+        #!/usr/bin/env python
+    import pandas as pd
+    import numpy as np
+    import gzip
+
+    TAB = "\\t"
+    NEWLINE = "\\n"
+    Sample_ID = "${ID}"
+    
+    PATH_hits = "${hitsTXT}"
+    
+    PATH_annot = "/mnt/databases/scgc/EggNOGdb/nog_annotation_virupdated.tsv"
+    DF_annot = pd.read_csv(PATH_annot, sep=TAB)
+    
+    PATH_out_csv = Sample_ID + "_proteins_hmmsearched_against_eggNOG.csv"
+    
+    PATH_out_countfile = Sample_ID + "_eggnog.count"
+    
+    def hmmer_to_DF(path, program="hmmsearch", format="tblout", verbose=False):   
+        if format in {"tblout","domtblout"}:
+            cut_index = {"tblout":18, "domtblout":22}[format]
+            data = list()
+            header = list()
+            with gzip.open(path,'rt') as FILE:
+                for line in FILE.readlines():
+                    if line.startswith("#"):
+                        header.append(line)
+                    else:
+                        row = list(filter(bool, line.strip().split(" ")))
+                        row = row[:cut_index] + [" ".join(row[cut_index:])]
+                        data.append(row)
+            DF = pd.DataFrame(data)
+            if not DF.empty:
+                columns = ["target_name","target_accession","query_name","query_accession","e-value","score","bias","best_domain_e-value","best_domain_score","best_domain_bias","exp","reg","clu","ov","env","dom","rep","inc","query_description"]
+                DF.columns = columns
+        return DF
+    
+    DF_hits = hmmer_to_DF(PATH_hits,"hmmsearch","tblout")
+
+    # Keep only the top hit for each query
+
+    # extract query_accession from query filename, e.g.  2N57K.faa.final_tree.fa -> 2N57K
+    DF_hits['query_accession'] = DF_hits['query_name'].str.split('.').str[0]
+    
+    # Drop unneeded cols
+    DF_hits = DF_hits.drop(columns=['target_accession','query_description','bias','best_domain_e-value','best_domain_score','best_domain_bias','exp','reg','clu','ov','env','dom','rep','inc'])
+    
+    ## Merge along the accession
+    DF = DF_hits.merge(DF_annot, left_on='query_accession', right_on='accession',how='left')
+    
+    DF = DF.rename(columns={'target_name':'protein',
+            'query_name':'hit',
+            'e-value':'evalue',
+            'score':'bit',
+            'description':'name',
+            'category':'cat',
+            'updated_viral':'virdom'})
+    
+    DF = DF[['protein','hit','bit','evalue','name','cat','domain','virdom']]
+    
+    DF.to_csv(PATH_out_csv)
+
+    # Now, report info about the best hits specifically
+
+    DF['bit'] = pd.to_numeric(DF['bit']) # make bitscore numeric
+    # For each protein (a.k.a. query) get the hit with the highest bitsore
+    idx = DF.groupby('protein')['bit'].idxmax()
+    DF_best = DF.loc[idx].reset_index(drop=True)
+    
+    print("Summarizing hits to a logfile")
+    
+    LINE1 = "Viral_besthits_(eggNOG)," + str(len(DF_best.loc[DF_best['virdom'] == 'Virus' ])) + "," + Sample_ID + NEWLINE
+    LINE2 = "Bacterial_besthits_(eggNOG)," + str(len(DF_best.loc[DF_best['virdom'] == 'Bacteria' ])) + "," + Sample_ID + NEWLINE
+    LINE3 = "Eukaryotic_besthits_(eggNOG)," + str(len(DF_best.loc[DF_best['virdom'] == 'Eukarya' ])) + "," + Sample_ID + NEWLINE
+    LINE4 = "Archaeal_besthits_(eggNOG)," + str(len(DF_best.loc[DF_best['virdom'] == 'Archaea' ]))  + "," + Sample_ID + NEWLINE
+    
+    with open(PATH_out_countfile, 'w') as f:
+        f.writelines([LINE1, LINE2, LINE3, LINE4])
+    """ }
+
+process LOG_CELL_OR_VIRUS {
+    publishDir "${DIR_out}/sample_tracking/3_assemblies", enabled: ( params.SPC == true ), mode: "copy"; errorStrategy = 'terminate'; queue="normal"
+    publishDir "${DIR_out}/sample_tracking/stepwise_counts", enabled: ( params.SPC == false ), mode: "copy"; errorStrategy = 'terminate'; queue="normal"
+    input: path(countfiles)
+    output: path("10_cell_or_virus_stats.csv")
+    shell: ''' echo "Metric,Count,Sample_ID" > 10_cell_or_virus_stats.csv; for LINE in !{countfiles}; do cat ${LINE} >> 10_cell_or_virus_stats.csv; done ''' }
+
+process PARSE_DEEPVIRFINDER_AND_VIRSORTER {
+  errorStrategy 'ignore'
+  container='brwnj/kmernorm:v1.0.0'
+  cpu=1
+  tag "${ID}"
+
+  input: tuple val(ID), path(virsorter_TSV), path(deepvirfinder_TSV), path(fasta)
+  output: tuple val(ID), path("bait_${ID}.fasta"), emit: fasta
+  output: path("1_${ID}.log"), emit: log
+
+  """
+  #!/usr/bin/env python
+  import pandas as pd; import shutil
+
+  tab = "\\t"; newline = "\\n"
+  PASS = False
+
+  # Check virsorter results
+  MAXvirsorter = pd.read_csv("${virsorter_TSV}",sep=tab)['max_score'].max()
+  if MAXvirsorter > ${Virus_MINscore}: PASS = True
+
+  # Check deepvirfinder results
+  DF = pd.read_csv("${deepvirfinder_TSV}",sep=tab)
+  DF_sig = DF.loc[DF['pvalue'] < ${Virus_MAXpvalue}]
+  if len(DF_sig) > 0:
+    MAXdeepvirfinder = DF_sig['score'].max()
+    if len(DF_sig) > 0: PASS = True
+  else: MAXdeepvirfinder = 'NA'
+
+  if PASS == True:
+    print("passed")
+    shutil.copy("${fasta}", "bait_${ID}.fasta") # copy SAG to move forward with analysis
+  else:
+    print("Fail. No contigs had scores over ","${Virus_MINscore}"," and/or pvalues under ","${Virus_MAXpvalue}")
+
+  # log results
+  with open("1_${ID}.log", "w") as handle:
+    handle.write("Bait,"+str(PASS)+",${ID}"+newline+"Maxdeepvirfinder,"+ str(MAXdeepvirfinder) +",${ID}"+newline+"MAXvirsorter,"+ str(MAXvirsorter) +",${ID}"+newline)
+  """ }
+
+process VIRALRECALL2 {
+  errorStrategy 'ignore'
+  beforeScript 'module load anaconda; source activate /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/viralrecall'
+  conda='/mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/viralrecall'
+  publishDir "${DIR_out}/${ID.tokenize('_')[0]}/${ID}/annotation_${ID}", enabled: ( params.SPC == true ), mode: "copy"
+  publishDir "${DIR_out}/${ID}/annotation_${ID}", enabled: ( params.SPC == false ), mode: "copy"
+  cpu=4
+  tag "${ID}"
+
+  input: tuple val(ID), path(fasta)
+
+  output: tuple val(ID), path("viralrecall_${ID}"), emit: output
+    path("viralrecall_${ID}/viralrecall_${ID}.summary.tsv"), emit: tsv
+
+  script:
+  """
+  cp ${fasta} ./${ID}.fasta
+  ln -s "${params.viralrecall_db}" .
+  ln -s /mnt/scgc_nfs/opt/viralrecall/acc/ .
+  python /mnt/scgc_nfs/opt/viralrecall/viralrecall.py -i ./${ID}.fasta -p "viralrecall_${ID}" -t ${task.cpus} -c
+  """ }
+
+process VIRSORTER_v2_2_3 {
+  errorStrategy 'ignore'
+  container='docker://jiarong/virsorter:latest'
+  publishDir "${DIR_out}/${ID.tokenize('_')[0]}/${ID}/annotation_${ID}", enabled: ( params.SPC == true ), mode: "copy"
+  publishDir "${DIR_out}/${ID}/annotation_${ID}", enabled: ( params.SPC == false ), mode: "copy"
+  //memory='50.GB'
+  cpu=6
+  tag "${ID}"
+
+  input: tuple val(ID), path(fasta)
+  output: tuple val(ID), path("virsorter_${ID}"), emit: DIR_input
+  output: tuple val(ID), path("virsorter_${ID}/final-viral-score.tsv"), emit: tsv
+
+  script:
+  """
+  virsorter run -w virsorter_${ID} -i ${fasta} --min-length 1500 -j ${task.cpus} all --db-dir "/mnt/scgc_nfs/ref/virsorter2/"
+  """ }
+
+process CHECKV_v1_0_1 {
+  errorStrategy 'ignore'
+  container='docker://quay.io/biocontainers/checkv:1.0.1--pyhdfd78af_0'
+  publishDir "${DIR_out}/${ID.tokenize('_')[0]}/${ID}/annotation_${ID}", enabled: ( params.SPC == true ), pattern: "checkv_${ID}", mode: "copy"
+  publishDir "${DIR_out}/${ID}/annotation_${ID}", enabled: ( params.SPC == false ), pattern: "checkv_${ID}", mode: "copy"
+  cpu=1
+  tag "${ID}"
+  input: tuple val(ID), path(fasta)
+  output: tuple val(ID), path("checkv_${ID}"), emit: dir
+  output: tuple val(ID), path("viruses_and_proviruses_${ID}.fasta"), emit: fasta
+  output: tuple val(ID), path("viruses_and_proviruses_${ID}.fasta"), path("checkv_${ID}/quality_summary.tsv"), emit: fasta_AND_tsv
+
+  shell:
+  '''
+  cp !{fasta} ./!{ID}.fasta
+  checkv end_to_end !{ID}.fasta checkv_!{ID} -t !{task.cpus} -d /mnt/scgc_nfs/ref/checkv/checkv-db-v1.0/
+  # delete empty output fastas
+  find . -type f -empty -print -delete
+  # Combine the output fasta files
+  for f in checkv_!{ID}/*iruses.fna; do (cat "${f}"; echo) >> viruses_and_proviruses_!{ID}.fasta; done
+  rm -r checkv_!{ID}/tmp
+  ''' }
+
+process DEEPVIRFINDER {
+  errorStrategy 'ignore'
+  beforeScript 'module load anaconda; source activate /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/deepvirfinder'
+  conda='/mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/deepvirfinder'
+  publishDir "${DIR_out}/${ID.tokenize('_')[0]}/${ID}/annotation_${ID}/deepvirfinder_${ID}", enabled: ( params.SPC == true ), mode: "copy"
+  publishDir "${DIR_out}/${ID}/annotation_${ID}/deepvirfinder_${ID}", enabled: ( params.SPC == false ), mode: "copy"
+  cpu=2
+  tag "${ID}"
+
+  input: tuple val(ID), path(fasta)
+  output: tuple val(ID), path("deepvirfinder.tsv")
+
+  script:
+  """
+  set +e
+  set +o pipefail
+
+  cp ${fasta} ./${ID}.fasta
+  if python3.6 /mnt/scgc_nfs/opt/deepvirfinder/DeepVirFinder/dvf.py -i ${ID}.fasta -o output -l 1500 -c ${task.cpus};
+  then
+    echo "DeepFirFinder worked, copying output files"
+    cp output/${ID}.fasta_gt1500bp_dvfpred.txt ./deepvirfinder.tsv
+  else
+    echo "WARNING: DeepFirFinder failed, but making dummy files to trigger next process in pipeline."
+    # Rationale: So that results from the parallel process--VirSorter--can still get analyzed by next process in pipeline.
+    echo "name\tlen\tscore\tpvalue" > ./deepvirfinder.tsv  # Make empty table
+  fi
+  """ }
