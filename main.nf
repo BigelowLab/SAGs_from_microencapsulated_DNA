@@ -364,7 +364,22 @@ process PHENIQS_DEMULTIPLEX {
     shell:
     '''
     pheniqs mux --config !{split_config} -R 7_pheniqs_report.json -t !{task.cpus} -B !{params.pheniqs_buffer_capacity}
-    ''' }
+    '''
+    stub:
+    // FOR TESTING: like SAMPLE_READS, this is slow under -stub-run regardless of --dev, since
+    // --dev's take() only trims capsules *after* this process has already demuxed the whole
+    // (un-subsampled) pool. Fakes params.dev_num_capsules capsules from a real slice of
+    // r1/r2 instead of running pheniqs mux for real, so TRIM_BARCODE right after this (not
+    // stubbed) still has real-shaped data to run trim_galore on. The report JSON is a minimal
+    // but structurally valid stand-in, not real content — just enough for PHENIQS_PARSE_REPORT
+    // (also not stubbed) to parse a barcode/count/index row without choking on an empty one.
+    """
+    for i in \$(seq 1 ${params.dev_num_capsules}); do
+        zcat ${r1} | head -40 | gzip > ${library}_stub\${i}_r1.fastq.gz
+        zcat ${r2} | head -40 | gzip > ${library}_stub\${i}_r2.fastq.gz
+    done
+    echo '{"cellular": [{"classified": [{"barcode": ["ACGTACGT"], "count": 10, "index": 1}]}]}' > 7_pheniqs_report.json
+    """ }
 
 process PHENIQS_PARSE_REPORT {
     tag "${library}"
