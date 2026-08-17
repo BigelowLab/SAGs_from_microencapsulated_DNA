@@ -62,10 +62,10 @@ params.contam_min_percid=95.0 // for BLASTn on contigs
 // BWA/BLAST indexes are auto-detected next to contam_ref_fasta; the download only runs when they (or the fasta itself) are missing.
 
 //#    VIRAL
-PATH_hmm = "/mnt/databases/scgc/EggNOGdb/nog.hmm"
-PATH_eggnog_hmm = "/mnt/databases/scgc/EggNOGdb/nog.hmm"
-TSV_eggnog_annot = "/mnt/databases/scgc/EggNOGdb/nog_annotation.tsv"
-PATH_EggNOG_hmms_2_taxonomy = "/mnt/scgc/EggNOGdb/nog_annotation_virupdated.tsv" // Manually updated by Alaina to make some viral domains bacteria (since EggNOG misannotated those)
+params.PATH_hmm = "/mnt/databases/scgc/EggNOGdb/nog.hmm"
+params.PATH_eggnog_hmm = "/mnt/databases/scgc/EggNOGdb/nog.hmm"
+params.TSV_eggnog_annot = "/mnt/databases/scgc/EggNOGdb/nog_annotation.tsv"
+params.PATH_EggNOG_hmms_2_taxonomy = "/mnt/scgc/EggNOGdb/nog_annotation_virupdated.tsv" // Manually updated by Alaina to make some viral domains bacteria (since EggNOG misannotated those)
 
 
 workflow {
@@ -236,6 +236,7 @@ workflow {
         .collectFile(name: 'all_stepwise_counts.csv', storeDir: "${params.output}/sample_tracking", seed: COUNT_HEADER, cache: false, sort: false)
 
     // Note, we run the viral pipeline on UNTRIMMED assemblies that have a max contig bigger than 1500.
+    /*
     if ( params.viral == true ) {
 
         GENOMAD_v1_11_1(RENAME_CAPSULE_CONTIGS.out.filter({ maxContigLength(it[1]) > 1500 }))
@@ -252,6 +253,7 @@ workflow {
         VIRSORTER_v2_2_3(CH_ID_library_finalFasta)
         DEEPVIRFINDER(CH_ID_library_finalFasta)
         CHECKV_v1_0_1(CH_ID_library_finalFasta) }
+    */
 
     ASSEMBLY_STATS_TABULATOR(CH_all_counts)
 }
@@ -801,20 +803,13 @@ process ASSEMBLY_STATS_TABULATOR {
     ## Warn the user when the metrics are from a stub run, so they don't mistake them for real data.
     DF_log = DF_log.map(lambda x: "${STUB_PREFIX}" + str(x))
     DF_log.to_csv(PATH_out, index=False)
-    """
-}
+    """ }
 
-process LOG_GENOMAD{
-    publishDir "${DIR_out}/sample_tracking/3_assemblies", enabled: ( params.SPC == true ), mode: "copy"; errorStrategy = 'terminate'; queue="normal"
-    publishDir "${DIR_out}/sample_tracking/stepwise_counts", enabled: ( params.SPC == false ), mode: "copy"; errorStrategy = 'terminate'; queue="normal"
-    input: path(countfiles)
-    output: path("9i_genomad_stats.csv")
-    shell: ''' echo "Metric,Count,Sample_ID" > 9i_genomad_stats.csv; for LINE in !{countfiles}; do cat ${LINE} >> 9i_genomad_stats.csv; done ''' }
-
+/*
 process PARSE_GENOMAD {
     tag "${ID}"
-    errorStrategy = "terminate"
-    container = 'brwnj/kmernorm:v1.0.0'
+    errorStrategy: "terminate"
+    container: 'brwnj/kmernorm:v1.0.0'
     input: tuple val(ID), path(DIR_geNomad)
     output: path("${ID}_geNomad_counts.csv")
     script:
@@ -850,16 +845,14 @@ process PARSE_GENOMAD {
         handle.write("Viral_bp_geNomad,"+str(LEN_virus)+","+ID+newline+"Viruses_geNomad,"+ str(NUM_virus) +","+ID+newline+"Plasmid_bp_geNomad,"+ str(LEN_plasmid) +","+ID+newline+'Plasmids_geNomad,' +str(NUM_plasmid)+','+ID+newline)
     """ }
 
-
 process GENOMAD_v1_11_1 {
   tag "${ID}"
-  errorStrategy = "terminate"
+  errorStrategy: "terminate"
   beforeScript 'module load anaconda; source activate /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/genomad_1.11.1'
   // Camargo, A. P., Roux, S., Schulz, F., Babinski, M., Xu, Y., Hu, B., Chain, P. S. G., Nayfach, S., & Kyrpides, N. C. — Nature Biotechnology (2023), DOI: 10.1038/s41587-023-01953-y.
   conda "/mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/genomad_1.11.1"
-  publishDir "${DIR_out}/${ID.tokenize('_')[0]}/${ID}/annotation_${ID}", enabled: ( params.SPC == true ), mode: "copy"
-  publishDir "${DIR_out}/${ID}/annotation_${ID}", enabled: ( params.SPC == false ), mode: "copy"
-  cpus=4
+  publishDir "${DIR_out}/${ID}/annotation_${ID}", mode: "copy"
+  cpus 4
   input: tuple val(ID), path(contigs)
   output: tuple val(ID), path("geNomad_${ID}")
   script: "genomad end-to-end --cleanup --threads ${task.cpus} --full-ictv-lineage --splits 8 ${contigs} geNomad_${ID} ${DB_genomad_v1_11_1}" }
@@ -869,11 +862,10 @@ process PROTEINS_VS_EGGNOG {
   // installation notes: conda create --prefix /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/hmmer_3.4 -c conda-forge -c bioconda hmmer=3.4 pandas numpy gzip
   beforeScript 'module load anaconda; source activate /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/hmmer_3.4'
   conda '/mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/hmmer_3.4'
-  publishDir "${DIR_out}/${ID.tokenize('_')[0]}/${ID}/annotation_${ID}/eggNOG_${ID}", enabled: ( params.SPC == true ), mode: params.publishmode
-  publishDir "${DIR_out}/${ID}/annotation_${ID}/eggNOG_${ID}", enabled: ( params.SPC == false ), mode: params.publishmode
-  errorStrategy = 'ignore'
-  cpus=2 // 6
-  memory="50.GB"
+publishDir "${DIR_out}/${ID}/annotation_${ID}/eggNOG_${ID}", mode: params.publishmode
+  errorStrategy: 'ignore'
+  cpus 2 // 6
+  memory "50.GB"
   tag "${ID}"
  
   input: tuple val(ID), path(faa)
@@ -889,10 +881,9 @@ process PROTEINS_VS_EGGNOG {
 
 process EGGNOG_HITS_TO_CELL_OR_VIRUS {
     container = 'brwnj/kmernorm:v1.0.0'
-    publishDir "${DIR_out}/${ID.tokenize('_')[0]}/${ID}/annotation_${ID}/eggNOG_${ID}", enabled: ( params.SPC == true ), mode: params.publishmode
-    publishDir "${DIR_out}/${ID}/annotation_${ID}/eggNOG_${ID}", enabled: ( params.SPC == false ), mode: params.publishmode
-    memory='50.GB'
-    errorStrategy = 'terminate'
+    publishDir "${DIR_out}/${ID}/annotation_${ID}/eggNOG_${ID}", mode: params.publishmode
+    memory '50.GB'
+    errorStrategy: 'terminate'
     input: tuple val(ID), path(hitsTXT)
     output:
         tuple val(ID), path("${ID}_proteins_hmmsearched_against_eggNOG.csv"), path("${ID}_eggnog.count"), emit: tsv                            
@@ -980,16 +971,15 @@ process EGGNOG_HITS_TO_CELL_OR_VIRUS {
     """ }
 
 process LOG_CELL_OR_VIRUS {
-    publishDir "${DIR_out}/sample_tracking/3_assemblies", enabled: ( params.SPC == true ), mode: "copy"; errorStrategy = 'terminate'; queue="normal"
-    publishDir "${DIR_out}/sample_tracking/stepwise_counts", enabled: ( params.SPC == false ), mode: "copy"; errorStrategy = 'terminate'; queue="normal"
+    publishDir "${DIR_out}/sample_tracking/3_assemblies", mode: "copy"; errorStrategy: 'terminate'; queue: "normal"
     input: path(countfiles)
     output: path("10_cell_or_virus_stats.csv")
     shell: ''' echo "Metric,Count,Sample_ID" > 10_cell_or_virus_stats.csv; for LINE in !{countfiles}; do cat ${LINE} >> 10_cell_or_virus_stats.csv; done ''' }
 
 process PARSE_DEEPVIRFINDER_AND_VIRSORTER {
   errorStrategy 'ignore'
-  container='brwnj/kmernorm:v1.0.0'
-  cpu=1
+  container 'brwnj/kmernorm:v1.0.0'
+  cpus 1
   tag "${ID}"
 
   input: tuple val(ID), path(virsorter_TSV), path(deepvirfinder_TSV), path(fasta)
@@ -1029,10 +1019,9 @@ process PARSE_DEEPVIRFINDER_AND_VIRSORTER {
 process VIRALRECALL2 {
   errorStrategy 'ignore'
   beforeScript 'module load anaconda; source activate /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/viralrecall'
-  conda='/mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/viralrecall'
-  publishDir "${DIR_out}/${ID.tokenize('_')[0]}/${ID}/annotation_${ID}", enabled: ( params.SPC == true ), mode: "copy"
-  publishDir "${DIR_out}/${ID}/annotation_${ID}", enabled: ( params.SPC == false ), mode: "copy"
-  cpu=4
+  conda '/mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/viralrecall'
+  publishDir "${DIR_out}/${ID}/annotation_${ID}", mode: "copy"
+  cpu 4
   tag "${ID}"
 
   input: tuple val(ID), path(fasta)
@@ -1051,10 +1040,9 @@ process VIRALRECALL2 {
 process VIRSORTER_v2_2_3 {
   errorStrategy 'ignore'
   container='docker://jiarong/virsorter:latest'
-  publishDir "${DIR_out}/${ID.tokenize('_')[0]}/${ID}/annotation_${ID}", enabled: ( params.SPC == true ), mode: "copy"
-  publishDir "${DIR_out}/${ID}/annotation_${ID}", enabled: ( params.SPC == false ), mode: "copy"
-  //memory='50.GB'
-  cpu=6
+  publishDir "${DIR_out}/${ID.tokenize('_')[0]}/${ID}/annotation_${ID}", mode: "copy"
+//memory='50.GB'
+  cpu 6
   tag "${ID}"
 
   input: tuple val(ID), path(fasta)
@@ -1069,9 +1057,8 @@ process VIRSORTER_v2_2_3 {
 process CHECKV_v1_0_1 {
   errorStrategy 'ignore'
   container='docker://quay.io/biocontainers/checkv:1.0.1--pyhdfd78af_0'
-  publishDir "${DIR_out}/${ID.tokenize('_')[0]}/${ID}/annotation_${ID}", enabled: ( params.SPC == true ), pattern: "checkv_${ID}", mode: "copy"
-  publishDir "${DIR_out}/${ID}/annotation_${ID}", enabled: ( params.SPC == false ), pattern: "checkv_${ID}", mode: "copy"
-  cpu=1
+  publishDir "${DIR_out}/${ID}/annotation_${ID}", pattern: "checkv_${ID}", mode: "copy"
+  cpu 1
   tag "${ID}"
   input: tuple val(ID), path(fasta)
   output: tuple val(ID), path("checkv_${ID}"), emit: dir
@@ -1092,10 +1079,9 @@ process CHECKV_v1_0_1 {
 process DEEPVIRFINDER {
   errorStrategy 'ignore'
   beforeScript 'module load anaconda; source activate /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/deepvirfinder'
-  conda='/mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/deepvirfinder'
-  publishDir "${DIR_out}/${ID.tokenize('_')[0]}/${ID}/annotation_${ID}/deepvirfinder_${ID}", enabled: ( params.SPC == true ), mode: "copy"
-  publishDir "${DIR_out}/${ID}/annotation_${ID}/deepvirfinder_${ID}", enabled: ( params.SPC == false ), mode: "copy"
-  cpu=2
+  conda '/mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/deepvirfinder'
+  publishDir "${DIR_out}/${ID}/annotation_${ID}/deepvirfinder_${ID}", mode: "copy"
+  cpu 2
   tag "${ID}"
 
   input: tuple val(ID), path(fasta)
@@ -1117,3 +1103,5 @@ process DEEPVIRFINDER {
     echo "name\tlen\tscore\tpvalue" > ./deepvirfinder.tsv  # Make empty table
   fi
   """ }
+
+*/
