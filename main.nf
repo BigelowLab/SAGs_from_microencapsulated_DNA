@@ -27,6 +27,21 @@ params.dev = false
 // Defaults
 params.publishmode = 'symlink'
 
+//# ATRANDI DEMULTIPLEXING
+params.barcode_dir = "${projectDir}/barcodes"
+params.sample_random_seed = 42
+params.sample_num_reads = 1000000
+params.sample_hamming_dist = 1
+params.split_hamming_dist = 1
+params.read_threshold = 3
+params.cell_threshold = 100000000000 // effectively uncapped
+params.barcode_trim_length = 45 // TRIM_BARCODE's trim_galore --clip_R2
+// Pheniqs' default is 2048 buffered records PER feed (input or output), so with one output
+// feed pair per capsule this scales directly with capsule count — with ~1900 real capsules in
+// one pool that's ~2000x the default's memory footprint. Turned down here since PHENIQS_DEMULTIPLEX
+// OOM'd against real data at the default; raise it again if throughput becomes the bottleneck instead.
+params.pheniqs_buffer_capacity = 64
+
 //# READ PROCESSING
 params.phred = "33"
 params.kmernorm_opts = "-k 21 -t 30 -c 3"
@@ -49,15 +64,61 @@ workflow {
     // Check inputs
     def input_dir = file(params.indir)
     if (!input_dir.exists()) {
-        error("Input directory not found: ${params.indir}.\nMake sure it exists and contains paired Illumina fastq files, named like.\n  BLAH_R1.fastq.gz\n  BLAH_R2.fastq.gz")
+        error("Input directory not found: ${params.indir}.\nMake sure it exists and contains paired Illumina fastq files carrying Atrandi combinatorial barcodes, named like.\n  BLAH_R1.fastq.gz\n  BLAH_R2.fastq.gz")
     }
-    CH_fastq = channel.fromPath("${params.indir}/*.{fastq,fastq.gz,fq,fq.gz}", checkIfExists: true)
+    // Each pair here is an Atrandi pool (many single-cell capsules multiplexed together via
+    // combinatorial D/C/B/A barcodes in R2) — not yet SAG-ready. The ATRANDI DEMULTIPLEXING
+    // block below splits each pool into one read pair per capsule before assembly begins.
+    CH_library_fastq = channel.fromPath("${params.indir}/*.{fastq,fastq.gz,fq,fq.gz}", checkIfExists: true)
         .flatten() // emit each fastq path as its own item
-        .map { file -> tuple(file.getSimpleName().replaceFirst('_R1','').replaceFirst('_R2',''), file) }    // Derive library by removing '_R1' or '_R2' suffixes. E.g. 4_12345678_R1.fastq.gz -> [4, 4_12345678_R1.fastq.gz] 
+        .map { file -> tuple(file.getSimpleName().replaceFirst('_R1','').replaceFirst('_R2',''), file) }    // Derive library by removing '_R1' or '_R2' suffixes. E.g. 4_12345678_R1.fastq.gz -> [4, 4_12345678_R1.fastq.gz]
         .groupTuple(size:2) // E.g. [4, [4_12345678_R1.fastq.gz, 4_12345678_R2.fastq.gz]]
-        .map { it -> tuple(it[0], it[1][0], it[1][1]) }       // Lastly, simplify.                              E.g. [X,[Y,Z]] ->  [X, Y, Z]
-    
+        .map { library, files ->      // Pick r1/r2 out by filename rather than list position — groupTuple's
+                                       // element order follows channel emission order, which isn't guaranteed
+                                       // to be R1-then-R2 (unlike FASTQC/Trimmomatic, the barcode positions
+                                       // this feeds into are order-sensitive enough that a silent swap here
+                                       // would corrupt every downstream capsule ID).
+            def r1 = files.find { it.getSimpleName().contains('_R1') }
+            def r2 = files.find { it.getSimpleName().contains('_R2') }
+            tuple(library, r1, r2)
+        }
+
+    def BC_D = file("${params.barcode_dir}/bcD_24.txt")
+    def BC_C = file("${params.barcode_dir}/bcC_24.txt")
+    def BC_B = file("${params.barcode_dir}/bcB_24.txt")
+    def BC_A = file("${params.barcode_dir}/bcA_24.txt")
+
+    SAMPLE_READS(CH_library_fastq)
+    PHENIQS_MAKE_SAMPLE_CONFIG(SAMPLE_READS.out, BC_D, BC_C, BC_B, BC_A)
+    PHENIQS_SAMPLE_DEMULTIPLEX(SAMPLE_READS.out.join(PHENIQS_MAKE_SAMPLE_CONFIG.out))
+    PHENIQS_COUNT_SORT_SAMPLE(PHENIQS_SAMPLE_DEMULTIPLEX.out)
+    PHENIQS_PLOT_HIST(PHENIQS_COUNT_SORT_SAMPLE.out)
+    PHENIQS_FILTER_BC_LIST(PHENIQS_COUNT_SORT_SAMPLE.out)
+    PHENIQS_NAME_CAPSULES(PHENIQS_FILTER_BC_LIST.out.join(CH_library_fastq), BC_D, BC_C, BC_B, BC_A)
+    PHENIQS_DEMULTIPLEX(PHENIQS_NAME_CAPSULES.out.join(CH_library_fastq))
+    PHENIQS_PARSE_REPORT(PHENIQS_DEMULTIPLEX.out.txt)
+
+    // Each capsule fastq is named <library>_<capsuleID>_r{1,2}.fastq.gz by PHENIQS_DEMULTIPLEX.
+    // Regroup into (ID, r1, r2) tuples — same shape the rest of the pipeline already expects —
+    // dropping the undetermined bucket (reads whose barcode combo didn't survive filtering).
+    CH_fastq = PHENIQS_DEMULTIPLEX.out.list_fastq.flatten()
+        .map { file -> tuple(file.getSimpleName().replaceFirst(/_r1$/,'').replaceFirst(/_r2$/,''), file) }
+        .groupTuple(size:2)
+        .map { ID, files ->      // Pick r1/r2 out by filename, not list position — see the matching note
+                                  // on CH_library_fastq above for why position isn't reliable here.
+            def r1 = files.find { it.getSimpleName().endsWith('_r1') }
+            def r2 = files.find { it.getSimpleName().endsWith('_r2') }
+            tuple(ID, r1, r2)
+        }
+        .filter { !it[0].contains('undetermined') }
+
+    // NOTE: unlike the pre-demux CH_fastq this replaces, --dev now caps the number of
+    // *capsules* carried into assembly, not the number of pools demultiplexed — every pool
+    // still gets demuxed even in dev mode, since demux itself is cheap relative to assembly.
     CH_fastq = params.dev ? CH_fastq.take(1) : CH_fastq
+
+    TRIM_BARCODE(CH_fastq)
+    CH_fastq = TRIM_BARCODE.out
 
     def CH_stepwise_counts = "${params.output}/sample_tracking/stepwise_counts"
     def COUNT_HEADER = "Metric,Count,Sample_ID\n"
@@ -160,6 +221,133 @@ workflow {
 }
 
 
+
+process SAMPLE_READS {
+    tag "${library} fastq subsampled to detect barcodes"
+    container 'quay.io/biocontainers/seqtk:1.2--1'
+    errorStrategy 'finish'
+    input: tuple val(library), path(r1), path(r2)
+    output: tuple val(library), path("0_sampled_r2.fastq")
+    script: "seqtk sample -s${params.sample_random_seed} ${r2} ${params.sample_num_reads} > 0_sampled_r2.fastq"
+    stub:
+    // FOR TESTING: seqtk's reservoir sample must stream the entire input regardless of the
+    // target sample size, so it's slow against real multi-GB fastqs even under -stub-run.
+    // Grabs a real prefix of R2 instead — downstream Pheniqs steps aren't stubbed and need
+    // genuinely barcode-bearing sequence, not placeholder data.
+    """
+    zcat ${r2} | head -40000 > 0_sampled_r2.fastq
+    """ }
+
+process PHENIQS_MAKE_SAMPLE_CONFIG {
+    tag "${library} barcodes recorded to json file"
+    container 'quay.io/biocontainers/pandas:2.2.1'
+    errorStrategy 'finish'
+    publishDir { "${params.output}/sample_tracking/atrandi_demux/${library}" }, mode: params.publishmode
+    input:
+        tuple val(library), path(sample_fastq)
+        path BC_D
+        path BC_C
+        path BC_B
+        path BC_A
+    output: tuple val(library), path('1_sample_pheniqs_config.json')
+    script: "pheniqs_make_sample_config.py ${sample_fastq} ${BC_D} ${BC_C} ${BC_B} ${BC_A} ${params.sample_hamming_dist}" }
+
+process PHENIQS_SAMPLE_DEMULTIPLEX {
+    tag "${library} demultiplexing read subset to evaluate barcode frequencies"
+    container 'quay.io/biocontainers/pheniqs:2.1.0--py39ha79081e_6'
+    input: tuple val(library), path(sample_fastq), path(sample_config)
+    output: tuple val(library), path("2_sample_demux.bam")
+    shell:
+    '''
+    pheniqs mux --config !{sample_config} -R sample_pheniqs_report.txt -t !{task.cpus}
+    mv sample_demux.bam ./2_sample_demux.bam
+    ''' }
+
+process PHENIQS_COUNT_SORT_SAMPLE {
+    tag "${library}"
+    container 'quay.io/biocontainers/samtools:1.24--h9dcdb79_1'
+    publishDir { "${params.output}/sample_tracking/atrandi_demux/${library}" }, mode: params.publishmode
+    input: tuple val(library), path(sample_demux_bam)
+    output: tuple val(library), path("3_observed_bc_count.txt")
+    shell:
+    '''
+    samtools view -h !{sample_demux_bam} | awk -F '\t' '{ for (i=1; i<=NF; i++) { if ($i ~ /^CB:Z:/) { split($i, tag, ":"); print tag[3]; } } }' | sort | uniq -c > 3_observed_bc_count.txt
+    ''' }
+
+process PHENIQS_PLOT_HIST {
+    tag "${library}"
+    container 'quay.io/biocontainers/mulled-v2-283013c53e9be2db71ac5442e35da355c979ca0e:db712fd85ab78376a65a1bfaa62f945d34b00413-0'
+    publishDir { "${params.output}/sample_tracking/atrandi_demux/${library}" }, mode: params.publishmode
+    input: tuple val(library), path(observed_bc_count)
+    output: path "4_observed_bc_dist.png"
+    script: "pheniqs_plot_observed.py ${observed_bc_count} ${params.read_threshold}" }
+
+process PHENIQS_FILTER_BC_LIST {
+    tag "${library}"
+    container 'quay.io/biocontainers/pandas:2.2.1'
+    publishDir { "${params.output}/sample_tracking/atrandi_demux/${library}" }, mode: params.publishmode
+    input: tuple val(library), path(observed_bc_count)
+    output: tuple val(library), path("5_filt_bc.txt")
+    script: "pheniqs_filter_barcodes.py ${observed_bc_count} ${params.read_threshold} ${params.cell_threshold}" }
+
+process PHENIQS_NAME_CAPSULES {
+    tag "${library}"
+    container 'quay.io/biocontainers/pandas:2.2.1'
+    publishDir { "${params.output}/sample_tracking/atrandi_demux/${library}" }, mode: params.publishmode
+    input:
+        tuple val(library), path(filt_bc), path(r1), path(r2)
+        path BC_D
+        path BC_C
+        path BC_B
+        path BC_A
+    output: tuple val(library), path('6_split_pheniqs_config.json')
+    script: "pheniqs_name_capsules.py ${filt_bc} ${r1} ${r2} ${params.split_hamming_dist} ${library} ${BC_D} ${BC_C} ${BC_B} ${BC_A}" }
+
+process PHENIQS_DEMULTIPLEX {
+    tag "${library} demultiplexing by combinatorial barcode"
+    // Retries with more memory instead of a fixed ceiling, same pattern as
+    // CONTAM_READ_FINDER/CHECKM_v1_1_9 below — but unlike those two, 4.GB isn't an
+    // empirically-observed OOM point, just a starting guess: this is the one process that
+    // reads a whole (un-subsampled) pool while writing one fastq.gz pair per capsule
+    // concurrently, so its footprint scales with both pool size and capsule count. Capped at
+    // 3 attempts (4/8/12GB) to stop at this machine's real 12GB Docker Desktop ceiling —
+    // retrying past that would just repeat the same OOM kill.
+    memory 12.GB
+    //memory { 4.GB * task.attempt }
+    maxForks 1 // keeps memory-heavy retries from stacking across libraries regardless of environment
+    errorStrategy 'finish' //{ task.exitStatus in [137, 140] ? 'retry' : 'terminate' }
+    maxRetries 2
+    container 'quay.io/biocontainers/pheniqs:2.1.0--py39ha79081e_6'
+    publishDir { "${params.output}/sample_tracking/atrandi_demux/${library}" }, pattern: "*.json", mode: params.publishmode
+    input: tuple val(library), path(split_config), path(r1), path(r2)
+    output:
+        tuple val(library), path('7_pheniqs_report.json'), emit: txt
+        path('*.fastq.gz'), emit: list_fastq
+    shell:
+    '''
+    pheniqs mux --config !{split_config} -R 7_pheniqs_report.json -t !{task.cpus} -B !{params.pheniqs_buffer_capacity}
+    ''' }
+
+process PHENIQS_PARSE_REPORT {
+    tag "${library}"
+    container 'quay.io/biocontainers/pandas:2.2.1'
+    publishDir { "${params.output}/sample_tracking/atrandi_demux/${library}" }, mode: params.publishmode
+    input: tuple val(library), path(split_report)
+    output: tuple val(library), path('8_pheniqs_report.csv')
+    script: "pheniqs_parse_report.py ${split_report}" }
+
+process TRIM_BARCODE {
+    tag "${ID} removing Atrandi barcode"
+    container 'quay.io/microbiome-informatics/trim_galore:0.6.7'
+    publishDir { "${params.output}/${ID}/reads_${ID}" }, pattern: "debarcoded_*fastq.gz", mode: params.publishmode
+    input: tuple val(ID), path(r1), path(r2)
+    output: tuple val(ID), path("debarcoded_${ID}_r1.fastq.gz"), path("debarcoded_${ID}_r2.fastq.gz")
+    script:
+    """
+    trim_galore --clip_R2 ${params.barcode_trim_length} --paired -o output -j ${task.cpus} ${r1} ${r2}
+    mv ./output/${ID}_r1_val_1.fq.gz ./debarcoded_${ID}_r1.fastq.gz
+    mv ./output/${ID}_r2_val_2.fq.gz ./debarcoded_${ID}_r2.fastq.gz
+    """ }
 
 process FASTQC_v0_11_9 {
     tag "${ID} quality check"
@@ -267,12 +455,17 @@ process DEINTERLEAVE {
 
 process BWA_INDEX {
     tag "downloading ref contaminant + BWA index from Zenodo"
-    container 'curlimages/curl:8.21.0'
-    // curlimages/curl deliberately runs as a non-root user by default. Docker Desktop's
-    // bind-mount layer on macOS is lenient about that mismatch against the host-owned
-    // work dir, but real Linux Docker enforces it, and this container cannot write its own output without -u root.
-    containerOptions '--entrypoint "" -u root'
-    shell '/bin/sh', '-ue'
+    // curlimages/curl:8.21.0 (the previous image here) is Alpine-based with no /bin/bash at
+    // all. That's fatal regardless of this process's own `shell` directive: Nextflow's Docker
+    // executor always launches the container's entrypoint as `/bin/bash -c "..."` for its own
+    // setup wrapper (verified directly — every task's .command.run does this, whatever image
+    // or `shell` directive it uses; `shell` only controls the *inner* invocation of
+    // .command.sh, nested inside that outer wrapper). No `shell` directive can work around an
+    // outer wrapper the image can't even start. debian:bookworm-slim has bash (and md5sum) by
+    // default, runs as root by default (no `-u root`/`--entrypoint` override needed, unlike
+    // curlimages/curl), and its curl successfully reaches zenodo.org over HTTPS (verified) —
+    // curl/unzip aren't preinstalled here, so the script installs them itself first.
+    container 'debian:bookworm-slim'
     // enabled: !workflow.stubRun keeps stub output from interfering with actual DB files.
     publishDir { file(params.contam_ref_fasta).getParent() }, mode: 'copy', enabled: !workflow.stubRun
     cache false
@@ -284,6 +477,8 @@ process BWA_INDEX {
     def base = file(params.contam_ref_fasta).getName()
     """
     set -e
+    apt-get update -qq
+    apt-get install -y -qq curl unzip
     fetch() {
         curl -sL -o "\$1" "https://zenodo.org/api/records/21682938/files/\$1/content"
         echo "\$2  \$1" | md5sum -c -

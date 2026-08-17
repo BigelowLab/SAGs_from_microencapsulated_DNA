@@ -2,7 +2,7 @@
 
 ![Pipeline smoke test](https://github.com/BigelowLab/GORG-Dark-SAG-assembly/actions/workflows/stub-run.yml/badge.svg)
 
-A Nextflow pipeline that takes paired-end Illumina reads from single-amplified genomes (SAGs) through to decontaminated assemblies: quality control → trimming → complexity filtering → k-mer normalization → host/contaminant read removal → assembly → contig trimming/deduplication → host/contaminant contig removal → genome completeness estimation → a single per-sample stats table.
+A Nextflow pipeline that takes paired-end Illumina reads from Atrandi combinatorial-barcoded single-amplified genome (SAG) libraries through to decontaminated assemblies: Atrandi demultiplexing → quality control → trimming → complexity filtering → k-mer normalization → host/contaminant read removal → assembly → contig trimming/deduplication → host/contaminant contig removal → genome completeness estimation → a single per-sample stats table.
 
 Built for the GORG-Dark project (single-cell genomics of deep-ocean prokaryotes), but the decontamination steps are general-purpose against any BWA/BLAST-indexable reference.
 
@@ -27,7 +27,7 @@ process.container = 'quay.io/nextflow/bash'
 docker.enabled = true
 ```
 
-Drop paired FASTQ files into `input/` (see naming convention below), then:
+Drop paired, Atrandi-barcoded FASTQ files into `input/` (see naming convention below), then:
 
 ```bash
 nextflow run main.nf
@@ -41,7 +41,7 @@ The first run downloads the decontamination reference (~8GB) automatically — s
 nextflow run main.nf -stub-run --dev --indir .github/test_data --output /tmp/gorg-test -with-docker
 ```
 
-Runs the full pipeline wiring end-to-end against tiny bundled synthetic reads in under a minute, with every slow step (assembly, alignment, indexing, CheckM) swapped for a fast placeholder. This is also what runs in CI on every push/PR (`.github/workflows/stub-run.yml`) — good for confirming your Nextflow/Docker setup works, or for testing a pipeline change without waiting on a real run.
+Runs the full pipeline wiring end-to-end against tiny bundled synthetic Atrandi-barcoded reads in under a minute. Atrandi demultiplexing runs for real (it's fast even on real data), while every slow step further downstream (assembly, alignment, indexing, CheckM) is swapped for a fast placeholder. This is also what runs in CI on every push/PR (`.github/workflows/stub-run.yml`) — good for confirming your Nextflow/Docker setup works, or for testing a pipeline change without waiting on a real run.
 
 ## Usage
 
@@ -54,7 +54,9 @@ nextflow run main.nf --indir <dir> --output <dir>   # override input/output loca
 
 ### Input naming convention
 
-Files in `--indir` must be paired FASTQ named `<sample>_R1.fastq.gz` / `<sample>_R2.fastq.gz` (`.fastq`, `.fq`, and `.fq.gz` are also matched). The sample ID is derived by stripping `_R1`/`_R2` from the filename; mismatched or unpaired files will break the pairing step.
+Files in `--indir` must be paired FASTQ named `<library>_R1.fastq.gz` / `<library>_R2.fastq.gz` (`.fastq`, `.fq`, and `.fq.gz` are also matched). The library ID is derived by stripping `_R1`/`_R2` from the filename; mismatched or unpaired files will break the pairing step.
+
+Each pair is an **Atrandi combinatorial-barcode pool**, not a single SAG — many single-cell capsules multiplexed together via 4 independent 8bp barcode positions (D, C, B, A) embedded in the first 44bp of R2. The pipeline demultiplexes each pool before assembly; downstream stages then operate per-capsule, with each capsule's sample ID taking the form `<library>_<capsuleID>`.
 
 ### Key parameters
 
@@ -62,8 +64,14 @@ Files in `--indir` must be paired FASTQ named `<sample>_R1.fastq.gz` / `<sample>
 |---|---|---|
 | `--indir` | `./input/` | Directory of input FASTQ files |
 | `--output` | `./results/` | Output directory |
-| `--dev` | `false` | Only process the first sample (for quick testing) |
+| `--dev` | `false` | Only carry the first capsule into assembly (every pool is still demultiplexed in full — see [Pipeline stages](#pipeline-stages)) |
 | `--publishmode` | `symlink` | How outputs are linked into `--output` (`symlink`, `copy`, etc.) |
+| `--barcode_dir` | `./barcodes/` | Directory containing `bc{A,B,C,D}_24.txt`, the 4 Atrandi barcode lists |
+| `--read_threshold` | `3` | Minimum reads a barcode combo needs to be treated as a real capsule, not noise |
+| `--cell_threshold` | (uncapped) | Maximum number of capsules kept per pool, after ranking by read count |
+| `--barcode_trim_length` | `45` | bp trimmed off the front of R2 (barcode + linker) after demultiplexing |
+| `--sample_num_reads` | `1000000` | Reads subsampled per pool to estimate barcode frequencies before the real demux |
+| `--sample_hamming_dist` / `--split_hamming_dist` | `1` / `1` | Barcode mismatch tolerance during frequency estimation / the real demux |
 | `--contam_ref_fasta` | `./reference/GRCh38_AG665_mm10.fa` | Decontamination reference; auto-downloaded here if missing (see below) |
 | `--complexity_threshold` | `0.05` | Low-complexity read filtering threshold |
 | `--reference_threshold` | `0.05` | `bwa aln -n` mismatch threshold for read decontamination |
@@ -74,6 +82,7 @@ Files in `--indir` must be paired FASTQ named `<sample>_R1.fastq.gz` / `<sample>
 
 ## Pipeline stages
 
+0. **Atrandi demultiplexing** — subsamples each pool to estimate barcode frequencies (Pheniqs), filters out low-count noise, assigns each real capsule an ID, then demultiplexes the full pool by combinatorial D/C/B/A barcode into one read pair per capsule, and trims the barcode/linker bases off R2
 1. **QC & trimming** — FastQC, Trimmomatic
 2. **Complexity filtering & normalization** — drops low-complexity pairs, then k-mer normalizes
 3. **Read decontamination** — aligns to the reference with BWA, removes anything that hits it

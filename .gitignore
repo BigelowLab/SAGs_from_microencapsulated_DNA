@@ -3,3 +3,6 @@
 work/
 nextflow.config
 reference/
+input/
+results/
+.DS_Store
