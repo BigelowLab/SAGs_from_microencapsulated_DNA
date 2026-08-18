@@ -67,6 +67,8 @@ params.PATH_eggnog_hmm = "/mnt/databases/scgc/EggNOGdb/nog.hmm"
 params.TSV_eggnog_annot = "/mnt/databases/scgc/EggNOGdb/nog_annotation.tsv"
 params.PATH_EggNOG_hmms_2_taxonomy = "/mnt/scgc/EggNOGdb/nog_annotation_virupdated.tsv" // Manually updated by Alaina to make some viral domains bacteria (since EggNOG misannotated those)
 
+//#.    ANNOTATION
+params.prokka = "./annot_database/uniprot_swissprot_prokka.fasta"
 
 workflow {
 
@@ -225,6 +227,20 @@ workflow {
         }
         .collectFile(name: '9_checkm_completeness.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false, sort: false)
 
+    // CheckM's lineage_wf tries both genetic codes (4 and 11) during marker gene prediction
+    // and records the one it picked in storage/bin_stats.analyze.tsv, not the --tab_table completeness TSV.
+    CH_translation_table = CHECKM_v1_1_9.out
+        .map { ID, checkm_dir ->
+            def bin_stats = file("${checkm_dir}/storage/bin_stats.analyze.tsv").text
+            def translation_table = (bin_stats =~ /'Translation table':\s*(\d+)/)[0][1]
+            tuple(ID, translation_table)
+        }
+    
+    PROKKA_v1_14_6(TRIM_CONTIGS.out.trimmed_contigs.filter({ it[1].size()>0 }).join(CH_translation_table))
+
+    PROKKA_GFF_2_TSV(PROKKA_v1_14_6.out.gff.join(TRIM_CONTIGS.out.trimmed_contigs.filter({ it[1].size()>0 })))
+    //LOG_PROKKA(PROKKA_GFF_2_TSV.out.countfile.collect())
+    
     // Combine every stepwise count file into one, earliest stage first. Each one already
     // carries its own COUNT_HEADER line (from its own collectFile seed above) — strip
     // that off per file before stacking, then let this collectFile's own seed add it back at the end.
@@ -587,9 +603,13 @@ process CONTAM_READ_FINDER {
     tag "${ID}"
     // Retries with more memory instead of a fixed ceiling, so this adapts to whatever's
     // actually available (a laptop, CI, an HPC node) rather than encoding one machine's
-    // Docker Desktop allocation. 5.GB is where this genuinely OOM'd once for real against
-    // this reference; attempt 2 (10GB) lands right around where it's since run reliably.
-    memory { 5.GB * task.attempt }
+    // Docker Desktop allocation. Starting attempt at 10.GB (not 5.GB): a dynamic memory
+    // directive is part of Nextflow's task hash, so a task that only succeeds on a retry
+    // gets cached under that retry's hash, not attempt 1's — every subsequent -resume
+    // still checks attempt 1 first, misses, and re-OOMs before reaching the cached retry
+    // again. Confirmed against real Atrandi capsule data: most real samples need >5GB and
+    // were stuck re-running this loop on every single -resume; 10GB clears them on attempt 1.
+    memory { 10.GB * task.attempt }
     maxForks 1 // keeps memory-heavy retries from stacking across samples regardless of environment
     errorStrategy { task.exitStatus in [137, 140] ? 'retry' : 'terminate' }
     maxRetries 3
@@ -776,9 +796,10 @@ process CHECKM_v1_1_9 {
     """
     stub:
     """
-    mkdir checkm_${ID}
+    mkdir -p checkm_${ID}/storage
     printf "Bin Id\\tCompleteness\\tContamination\\n" > checkm_${ID}/completeness_${ID}.tsv
     printf "final_contigs_${ID}\\t99.9\\t0.1\\n" >> checkm_${ID}/completeness_${ID}.tsv
+    printf "final_contigs_${ID}\\t{'Translation table': 11}\\n" > checkm_${ID}/storage/bin_stats.analyze.tsv
     """ }
 
 process ASSEMBLY_STATS_TABULATOR {
@@ -1120,3 +1141,30 @@ process DEEPVIRFINDER {
   """ }
 
 */
+
+process PROKKA_v1_14_6 {
+    container 'quay.io/biocontainers/prokka:1.14.6--pl5262hdfd78af_1'
+    errorStrategy 'finish'
+    tag "${ID}"
+    publishDir { "${params.output}/${ID}/annotation_${ID}" }, mode: params.publishmode
+    input: tuple val(ID), path(contigs), val(translation_table)
+    output:
+        tuple val(ID), path("prokka_${ID}"), emit: dir
+        tuple val(ID), path("prokka_${ID}/${ID}.gff"), emit: gff
+    shell:
+    '''
+    prokka --gcode !{translation_table} --outdir prokka_!{ID} --prefix !{ID} --locustag !{ID} --quiet --compliant --force --proteins !{params.prokka} --cpus !{task.cpus} !{contigs}
+    ''' }
+
+process PROKKA_GFF_2_TSV{
+    tag "${ID}"
+    errorStrategy 'finish'
+    // pandas alone (the old container here) is missing Bio.SeqIO, which this script's
+    // coding-density calc needs — mulled combo pins pandas=1.5.2, biopython=1.79, numpy=1.23.5.
+    container 'quay.io/biocontainers/mulled-v2-1e9d4f78feac0eb2c8d8246367973b3f6358defc:ebca4356a18677aaa2c50f396a408343200e514b-0'
+    publishDir { "${params.output}/${ID}/annotation_${ID}" }, mode: params.publishmode, pattern: "*tsv"
+    input: tuple val(ID), path(gff), path(contigs)
+    output:
+        tuple val(ID), path("comprehensive_prokka_${ID}.tsv"), emit: tsv
+        path("prokka_stats_${ID}.csv"), emit: countfile
+    script: template "prokka_gff_2_tsv.py" }
