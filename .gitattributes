@@ -1,0 +1,1 @@
+annot_database/uniprot_swissprot_prokka.fasta filter=lfs diff=lfs merge=lfs -text
