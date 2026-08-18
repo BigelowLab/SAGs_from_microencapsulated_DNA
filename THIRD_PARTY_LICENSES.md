@@ -20,6 +20,10 @@ must be preserved and included in the distributed image/artifact.
 | [BWA](https://github.com/lh3/bwa) (Burrows-Wheeler Aligner) | — | GPL-3.0-or-later + MIT | GPLv3 governs the package as a whole (via BWT-SW-derived code); sorting, hash table, BWT, and IS libraries are separately MIT-licensed. |
 | [SPAdes](https://github.com/ablab/spades) | 3.15.2 | GPL-2.0-only | |
 | [CheckM](https://github.com/Ecogenomics/CheckM) | 1.1.9 | GPL-3.0-or-later | CheckM v1 is unmaintained upstream (superseded by CheckM2); this does not affect its license terms. |
+| [Prokka](https://github.com/tseemann/prokka) | 1.14.6 | GPL-3.0-or-later | At runtime, invokes several other external annotation tools (BLAST+, HMMER, Aragorn, Infernal, minced, Prodigal, tbl2asn) as separate binaries within its container, each under its own license — not covered individually here. |
+| [Biopython](https://biopython.org/) | 1.79 | Biopython License Agreement (permissive; some files dual-licensed BSD-3-Clause) | Used by `templates/prokka_gff_2_tsv.py` (`Bio.SeqIO`) for coding-density calculation. |
+| [pandas](https://pandas.pydata.org/) | — | BSD-3-Clause | Version varies by container across processes (1.5.2 in the mulled image backing `PROKKA_GFF_2_TSV`, 2.2.1 elsewhere, e.g. `ASSEMBLY_STATS_TABULATOR`). |
+| [NumPy](https://numpy.org/) | — | BSD-3-Clause | Bundled with pandas in the containers above; not directly imported by this pipeline's own scripts. |
 
 ## Summary of obligations
 
