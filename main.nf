@@ -936,7 +936,7 @@ publishDir { "${params.output}/${ID}/annotation_${ID}/eggNOG_${ID}" }, mode: par
   """ }
   
 process EGGNOG_HITS_TO_CELL_OR_VIRUS {
-    container = 'brwnj/kmernorm:v1.0.0'
+    container 'quay.io/biocontainers/pandas:2.2.1'
     publishDir { "${params.output}/${ID}/annotation_${ID}/eggNOG_${ID}" }, mode: params.publishmode
     memory '50.GB'
     errorStrategy 'terminate'
