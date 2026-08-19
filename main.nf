@@ -65,25 +65,9 @@ params.contam_min_percid=95.0 // for BLASTn on contigs
 //#    VIRAL
 params.DB_genomad_v1_11_1 = "/mnt/scgc_nfs/ref/genomad/genomad_1.11.1/genomad_db/"
 params.viralrecall_db = "/mnt/scgc_nfs/ref/viralrecall/hmm"
-params.quast_ecoli_MG1655 = "/mnt/scgc_nfs/ref/atrandi/ec_mg1655_refgenome.fasta"
-params.quast_ecoli_ref_806 = "/mnt/scgc/scgc_nfs/ref/ecoli/Eschericia_coli_K12_DH1_ATCC33849.fasta"
-params.quast_mruber_ref_840 = "/mnt/scgc/scgc_nfs/ref/mruber/Meiothermus_ruber_DSM_1279.fasta"
-params.quast_pmarinus_ref_847 = "/mnt/scgc/scgc_nfs/ref/pmarinas/Prochlorococcus_CCMP1375.fasta"
-params.gtdb = "/mnt/scgc_nfs/ref/gtdb/release207" //release207 = db version for gtdbtk_2_0_0
 params.prokka = "/mnt/scgc_nfs/ref/uniprot_swissprot_prokka.fasta"
-params.silva_blastdb = '/mnt/scgc_nfs/ref/silva_rrna/v128/silvamod128.fasta'
-params.silva_map = '/mnt/scgc_nfs/ref/silva_rrna/v128/silvamod128.map'
-params.silva_tree = '/mnt/scgc_nfs/ref/silva_rrna/v128/silvamod128.tre'
-params.dram_db = '/mnt/scgc_nfs/ref/dram/'
-params.gunc_db = '/mnt/scgc_nfs/ref/gunc/gunc_db_progenomes2.1.dmnd'
 params.PATH_hmm = "/mnt/databases/scgc/EggNOGdb/nog.hmm"
 params.PATH_annot = "/mnt/databases/scgc/EggNOGdb/nog_annotation_virupdated.tsv"
-params.PATH_eggnog_hmm = "/mnt/databases/scgc/EggNOGdb/nog.hmm"
-params.TSV_eggnog_annot = "/mnt/databases/scgc/EggNOGdb/nog_annotation.tsv"
-params.PATH_EggNOG_hmms_2_taxonomy = "/mnt/scgc/EggNOGdb/nog_annotation_virupdated.tsv" // Manually updated by Alaina to make some viral domains bacteria (since EggNOG misannotated those)
-
-//#.    ANNOTATION
-params.prokka = "./annot_database/uniprot_swissprot_prokka.fasta"
 
 def maxContigLength(Path fasta) {
   fasta.splitFasta( record:[ seqString: true ] ) // Nextflow has a similarly named method for files which follows the same input as the channel operator
@@ -274,9 +258,9 @@ workflow {
     PROKKA_GFF_2_TSV(PROKKA_v1_14_6.out.gff.join(TRIM_CONTIGS.out.trimmed_contigs.filter({ it[1].size()>0 })))
     
     // Alaina's viral vs. cellular predictor
-    PROTEINS_VS_EGGNOG_5(PROKKA_v1_14_6.out.faa.filter({ it[1].size()>0 })) // ignore .faa containing no proteins
-    EGGNOG_HITS_TO_CELL_OR_VIRUS(PROTEINS_VS_EGGNOG_5.out.filter({ it[1].size()>2350 })) // only keep outputs where hitsTXT file is over 13 lines long (<= 13 means no hits)
-    LOG_CELL_OR_VIRUS(EGGNOG_HITS_TO_CELL_OR_VIRUS.out.countfile.collect())
+    //PROTEINS_VS_EGGNOG_5(PROKKA_v1_14_6.out.faa.filter({ it[1].size()>0 })) // ignore .faa containing no proteins
+    //EGGNOG_HITS_TO_CELL_OR_VIRUS(PROTEINS_VS_EGGNOG_5.out.filter({ it[1].size()>2350 })) // only keep outputs where hitsTXT file is over 13 lines long (<= 13 means no hits)
+    //LOG_CELL_OR_VIRUS(EGGNOG_HITS_TO_CELL_OR_VIRUS.out.countfile.collect())
     
     //LOG_PROKKA(PROKKA_GFF_2_TSV.out.countfile.collect())
     
@@ -295,21 +279,14 @@ workflow {
 
         CH_FINAL_CONTIGS = TRIM_CONTIGS.out.trimmed_contigs.filter({ it[1].size()>0 })
         GENOMAD_v1_11_1(CH_FINAL_CONTIGS.filter({ maxContigLength(it[1]) > 1500 }))
-        /*
-        PARSE_GENOMAD(GENOMAD_v1_11_1.out)
-        LOG_GENOMAD(PARSE_GENOMAD.out.collect())
-
-        // Alaina's viral vs. cellular predictor
-        PROTEINS_VS_EGGNOG(PROKKA_v1_14_6.out.faa.filter({ it[1].size()>0 })) // ignore .faa containing no proteins
-        EGGNOG_HITS_TO_CELL_OR_VIRUS(PROTEINS_VS_EGGNOG.out.filter({ it[1].size()>2350 })) // only keep outputs where hitsTXT file is over 13 lines long (<= 13 means no hits)
-        LOG_CELL_OR_VIRUS(EGGNOG_HITS_TO_CELL_OR_VIRUS.out.countfile.collect())
+        //PARSE_GENOMAD(GENOMAD_v1_11_1.out)
+        //LOG_GENOMAD(PARSE_GENOMAD.out.collect())
 
         // Other viral tools
         VIRALRECALL2(CH_FINAL_CONTIGS)
         VIRSORTER_v2_2_3(CH_FINAL_CONTIGS)
+        CHECKV_v1_0_1(CH_FINAL_CONTIGS)
         DEEPVIRFINDER(CH_FINAL_CONTIGS)
-        CHECKV_v1_0_1(CH_FINAL_CONTIGS) }
-        */
     }
     ASSEMBLY_STATS_TABULATOR(CH_all_counts)
 }
@@ -842,6 +819,34 @@ process CHECKM_v1_1_9 {
     printf "final_contigs_${ID}\\t{'Translation table': 11}\\n" > checkm_${ID}/storage/bin_stats.analyze.tsv
     """ }
 
+process PROKKA_v1_14_6 {
+    container 'quay.io/biocontainers/prokka:1.14.6--pl5262hdfd78af_1'
+    errorStrategy 'finish'
+    tag "${ID}"
+    publishDir { "${params.output}/${ID}/annotation_${ID}" }, mode: params.publishmode
+    input: tuple val(ID), path(contigs), val(translation_table)
+    output:
+        tuple val(ID), path("prokka_${ID}"), emit: dir
+        tuple val(ID), path("prokka_${ID}/${ID}.gff"), emit: gff
+        tuple val(ID), path("prokka_${ID}/${ID}.faa"), emit: faa
+    shell:
+    '''
+    prokka --gcode !{translation_table} --outdir prokka_!{ID} --prefix !{ID} --locustag !{ID} --quiet --compliant --force --proteins !{params.prokka} --cpus !{task.cpus} !{contigs}
+    ''' }
+
+process PROKKA_GFF_2_TSV{
+    tag "${ID}"
+    errorStrategy 'finish'
+    // pandas alone (the old container here) is missing Bio.SeqIO, which this script's
+    // coding-density calc needs — mulled combo pins pandas=1.5.2, biopython=1.79, numpy=1.23.5.
+    container 'quay.io/biocontainers/mulled-v2-1e9d4f78feac0eb2c8d8246367973b3f6358defc:ebca4356a18677aaa2c50f396a408343200e514b-0'
+    publishDir { "${params.output}/${ID}/annotation_${ID}" }, mode: params.publishmode, pattern: "*tsv"
+    input: tuple val(ID), path(gff), path(contigs)
+    output:
+        tuple val(ID), path("comprehensive_prokka_${ID}.tsv"), emit: tsv
+        path("prokka_stats_${ID}.csv"), emit: countfile
+    script: template "prokka_gff_2_tsv.py" }
+
 process ASSEMBLY_STATS_TABULATOR {
     // Only real dependencies are pandas + numpy, and numpy comes bundled with this image.
     container 'quay.io/biocontainers/pandas:2.2.1'
@@ -881,53 +886,11 @@ process ASSEMBLY_STATS_TABULATOR {
     DF_log.to_csv(PATH_out, index=False)
     """ }
 
-/*
-process PARSE_GENOMAD {
-    tag "${ID}"
-    errorStrategy: "terminate"
-    container: 'brwnj/kmernorm:v1.0.0'
-    input: tuple val(ID), path(DIR_geNomad)
-    output: path("${ID}_geNomad_counts.csv")
-    script:
-    """
-    #!/usr/bin/env python
-    newline='\\n'
-    ID="${ID}"
-    PATH_out=ID+"_geNomad_counts.csv"
-
-    import pandas as pd
-    from glob import glob
-    from os.path import exists
-
-    PATH_plasmid_tsv = glob("${DIR_geNomad}/*_summary/*_plasmid_summary.tsv")[0]
-    PATH_virus_tsv = glob("${DIR_geNomad}/*_summary/*_virus_summary.tsv")[0]
-
-    NUM_virus = ''; LEN_virus = ''; NUM_plasmid = ''; LEN_plasmid = ''
-
-    if exists(PATH_virus_tsv): 
-        DF_virus = pd.read_csv(PATH_virus_tsv, sep="\t")
-        NUM_virus = len(DF_virus)
-        LEN_virus = DF_virus['length'].sum()
-    else: print("No file matching this pattern: ${DIR_geNomad}/*_summary/*_virus_summary.tsv" )
-    
-    if exists(PATH_plasmid_tsv):
-        DF_plasmid = pd.read_csv(PATH_plasmid_tsv, sep="\t")
-        NUM_plasmid = len(DF_plasmid)
-        LEN_plasmid = DF_plasmid['length'].sum()
-    else: print("No file matching this pattern: ${DIR_geNomad}/*_summary/*_plasmid_summary.tsv" )
-    
-    #  log results
-    with open(PATH_out, "w") as handle:
-        handle.write("Viral_bp_geNomad,"+str(LEN_virus)+","+ID+newline+"Viruses_geNomad,"+ str(NUM_virus) +","+ID+newline+"Plasmid_bp_geNomad,"+ str(LEN_plasmid) +","+ID+newline+'Plasmids_geNomad,' +str(NUM_plasmid)+','+ID+newline)
-    """ }
-*/
 process GENOMAD_v1_11_1 {
   tag "${ID}"
   errorStrategy "terminate"
-  beforeScript 'module load anaconda; source activate /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/genomad_1.11.1'
   // Camargo, A. P., Roux, S., Schulz, F., Babinski, M., Xu, Y., Hu, B., Chain, P. S. G., Nayfach, S., & Kyrpides, N. C. — Nature Biotechnology (2023), DOI: 10.1038/s41587-023-01953-y.
   container 'quay.io/biocontainers/genomad:1.11.1--pyhdfd78af_0'
-  //conda "/mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/genomad_1.11.1"
   publishDir { "${params.output}/${ID}/annotation_${ID}" }, mode: "copy"
   cpus 4
   input: tuple val(ID), path(contigs)
@@ -1053,6 +1016,138 @@ process LOG_CELL_OR_VIRUS {
     output: path("10_cell_or_virus_stats.csv")
     shell: ''' echo "Metric,Count,Sample_ID" > 10_cell_or_virus_stats.csv; for LINE in !{countfiles}; do cat ${LINE} >> 10_cell_or_virus_stats.csv; done ''' }
 
+process VIRALRECALL2 {
+  errorStrategy 'ignore'
+  beforeScript 'module load anaconda; source activate /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/viralrecall'
+  conda '/mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/viralrecall'
+  publishDir { "${params.output}/sample_tracking/3_assemblies" }, mode: "copy"
+  cpus 4
+  tag "${ID}"
+
+  input: tuple val(ID), path(fasta)
+
+  output: tuple val(ID), path("viralrecall_${ID}"), emit: output
+    path("viralrecall_${ID}/viralrecall_${ID}.summary.tsv"), emit: tsv
+
+  script:
+  """
+  cp ${fasta} ./${ID}.fasta
+  ln -s "${params.viralrecall_db}" .
+  ln -s /mnt/scgc_nfs/opt/viralrecall/acc/ .
+  python /mnt/scgc_nfs/opt/viralrecall/viralrecall.py -i ./${ID}.fasta -p "viralrecall_${ID}" -t ${task.cpus} -c
+  """ }
+
+process VIRSORTER_v2_2_3 {
+  errorStrategy 'ignore'
+  container 'docker://jiarong/virsorter:latest'
+  publishDir { "${params.output}/${ID}/annotation_${ID}" }, mode: "copy"
+//memory='50.GB'
+  cpus 6
+  tag "${ID}"
+
+  input: tuple val(ID), path(fasta)
+  output: tuple val(ID), path("virsorter_${ID}"), emit: DIR_input
+  output: tuple val(ID), path("virsorter_${ID}/final-viral-score.tsv"), emit: tsv
+
+  script:
+  """
+  virsorter run -w virsorter_${ID} -i ${fasta} --min-length 1500 -j ${task.cpus} all --db-dir "/mnt/scgc_nfs/ref/virsorter2/"
+  """ }
+
+process CHECKV_v1_0_1 {
+  errorStrategy 'ignore'
+  container='docker://quay.io/biocontainers/checkv:1.0.1--pyhdfd78af_0'
+  publishDir "${params.output}/${ID}/annotation_${ID}", pattern: "checkv_${ID}", mode: "copy"
+  cpus 1
+  tag "${ID}"
+  input: tuple val(ID), path(fasta)
+  output: tuple val(ID), path("checkv_${ID}"), emit: dir
+  output: tuple val(ID), path("viruses_and_proviruses_${ID}.fasta"), emit: fasta
+  output: tuple val(ID), path("viruses_and_proviruses_${ID}.fasta"), path("checkv_${ID}/quality_summary.tsv"), emit: fasta_AND_tsv
+
+  shell:
+  '''
+  cp !{fasta} ./!{ID}.fasta
+  checkv end_to_end !{ID}.fasta checkv_!{ID} -t !{task.cpus} -d /mnt/scgc_nfs/ref/checkv/checkv-db-v1.0/
+  # delete empty output fastas
+  find . -type f -empty -print -delete
+  # Combine the output fasta files
+  for f in checkv_!{ID}/*iruses.fna; do (cat "${f}"; echo) >> viruses_and_proviruses_!{ID}.fasta; done
+  rm -r checkv_!{ID}/tmp
+  ''' }
+
+process DEEPVIRFINDER {
+  errorStrategy 'ignore'
+  // No bioconda/biocontainers package exists for DeepVirFinder (upstream has no official
+  // container either); this community image traces back to a public Dockerfile in
+  // replikation/What_the_Phage (the peer-reviewed "What the Phage" pipeline) — verified by
+  // pulling it and running `dvf.py --help` before adopting it. Its bundled models live at
+  // /DeepVirFinder/models, not the tool's own default ./models, hence -m below.
+  container 'replikation/deepvirfinder:latest'
+  publishDir { "${params.output}/${ID}/annotation_${ID}/deepvirfinder_${ID}" }, mode: "copy"
+  cpus 2
+  tag "${ID}"
+
+  input: tuple val(ID), path(fasta)
+  output: tuple val(ID), path("deepvirfinder.tsv")
+
+  script:
+  """
+  set +e
+  set +o pipefail
+
+  cp ${fasta} ./${ID}.fasta
+  if dvf.py -i ${ID}.fasta -m /DeepVirFinder/models -o output -l 1500 -c ${task.cpus};
+  then
+    echo "DeepFirFinder worked, copying output files"
+    cp output/${ID}.fasta_gt1500bp_dvfpred.txt ./deepvirfinder.tsv
+  else
+    echo "WARNING: DeepFirFinder failed, but making dummy files to trigger next process in pipeline."
+    # Rationale: So that results from the parallel process--VirSorter--can still get analyzed by next process in pipeline.
+    echo "name\tlen\tscore\tpvalue" > ./deepvirfinder.tsv  # Make empty table
+  fi
+  """ }
+
+  /*
+process PARSE_GENOMAD {
+    tag "${ID}"
+    errorStrategy: "terminate"
+    container: 'brwnj/kmernorm:v1.0.0'
+    input: tuple val(ID), path(DIR_geNomad)
+    output: path("${ID}_geNomad_counts.csv")
+    script:
+    """
+    #!/usr/bin/env python
+    newline='\\n'
+    ID="${ID}"
+    PATH_out=ID+"_geNomad_counts.csv"
+
+    import pandas as pd
+    from glob import glob
+    from os.path import exists
+
+    PATH_plasmid_tsv = glob("${DIR_geNomad}/*_summary/*_plasmid_summary.tsv")[0]
+    PATH_virus_tsv = glob("${DIR_geNomad}/*_summary/*_virus_summary.tsv")[0]
+
+    NUM_virus = ''; LEN_virus = ''; NUM_plasmid = ''; LEN_plasmid = ''
+
+    if exists(PATH_virus_tsv): 
+        DF_virus = pd.read_csv(PATH_virus_tsv, sep="\t")
+        NUM_virus = len(DF_virus)
+        LEN_virus = DF_virus['length'].sum()
+    else: print("No file matching this pattern: ${DIR_geNomad}/*_summary/*_virus_summary.tsv" )
+    
+    if exists(PATH_plasmid_tsv):
+        DF_plasmid = pd.read_csv(PATH_plasmid_tsv, sep="\t")
+        NUM_plasmid = len(DF_plasmid)
+        LEN_plasmid = DF_plasmid['length'].sum()
+    else: print("No file matching this pattern: ${DIR_geNomad}/*_summary/*_plasmid_summary.tsv" )
+    
+    #  log results
+    with open(PATH_out, "w") as handle:
+        handle.write("Viral_bp_geNomad,"+str(LEN_virus)+","+ID+newline+"Viruses_geNomad,"+ str(NUM_virus) +","+ID+newline+"Plasmid_bp_geNomad,"+ str(LEN_plasmid) +","+ID+newline+'Plasmids_geNomad,' +str(NUM_plasmid)+','+ID+newline)
+    """ }
+
 /*
 process PARSE_DEEPVIRFINDER_AND_VIRSORTER {
   errorStrategy 'ignore'
@@ -1093,121 +1188,4 @@ process PARSE_DEEPVIRFINDER_AND_VIRSORTER {
   with open("1_${ID}.log", "w") as handle:
     handle.write("Bait,"+str(PASS)+",${ID}"+newline+"Maxdeepvirfinder,"+ str(MAXdeepvirfinder) +",${ID}"+newline+"MAXvirsorter,"+ str(MAXvirsorter) +",${ID}"+newline)
   """ }
-
-process VIRALRECALL2 {
-  errorStrategy 'ignore'
-  beforeScript 'module load anaconda; source activate /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/viralrecall'
-  conda '/mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/viralrecall'
-  publishDir "${DIR_out}/${ID}/annotation_${ID}", mode: "copy"
-  cpu 4
-  tag "${ID}"
-
-  input: tuple val(ID), path(fasta)
-
-  output: tuple val(ID), path("viralrecall_${ID}"), emit: output
-    path("viralrecall_${ID}/viralrecall_${ID}.summary.tsv"), emit: tsv
-
-  script:
-  """
-  cp ${fasta} ./${ID}.fasta
-  ln -s "${params.viralrecall_db}" .
-  ln -s /mnt/scgc_nfs/opt/viralrecall/acc/ .
-  python /mnt/scgc_nfs/opt/viralrecall/viralrecall.py -i ./${ID}.fasta -p "viralrecall_${ID}" -t ${task.cpus} -c
-  """ }
-
-process VIRSORTER_v2_2_3 {
-  errorStrategy 'ignore'
-  container='docker://jiarong/virsorter:latest'
-  publishDir "${DIR_out}/${ID.tokenize('_')[0]}/${ID}/annotation_${ID}", mode: "copy"
-//memory='50.GB'
-  cpu 6
-  tag "${ID}"
-
-  input: tuple val(ID), path(fasta)
-  output: tuple val(ID), path("virsorter_${ID}"), emit: DIR_input
-  output: tuple val(ID), path("virsorter_${ID}/final-viral-score.tsv"), emit: tsv
-
-  script:
-  """
-  virsorter run -w virsorter_${ID} -i ${fasta} --min-length 1500 -j ${task.cpus} all --db-dir "/mnt/scgc_nfs/ref/virsorter2/"
-  """ }
-
-process CHECKV_v1_0_1 {
-  errorStrategy 'ignore'
-  container='docker://quay.io/biocontainers/checkv:1.0.1--pyhdfd78af_0'
-  publishDir "${DIR_out}/${ID}/annotation_${ID}", pattern: "checkv_${ID}", mode: "copy"
-  cpu 1
-  tag "${ID}"
-  input: tuple val(ID), path(fasta)
-  output: tuple val(ID), path("checkv_${ID}"), emit: dir
-  output: tuple val(ID), path("viruses_and_proviruses_${ID}.fasta"), emit: fasta
-  output: tuple val(ID), path("viruses_and_proviruses_${ID}.fasta"), path("checkv_${ID}/quality_summary.tsv"), emit: fasta_AND_tsv
-
-  shell:
-  '''
-  cp !{fasta} ./!{ID}.fasta
-  checkv end_to_end !{ID}.fasta checkv_!{ID} -t !{task.cpus} -d /mnt/scgc_nfs/ref/checkv/checkv-db-v1.0/
-  # delete empty output fastas
-  find . -type f -empty -print -delete
-  # Combine the output fasta files
-  for f in checkv_!{ID}/*iruses.fna; do (cat "${f}"; echo) >> viruses_and_proviruses_!{ID}.fasta; done
-  rm -r checkv_!{ID}/tmp
-  ''' }
-
-process DEEPVIRFINDER {
-  errorStrategy 'ignore'
-  beforeScript 'module load anaconda; source activate /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/deepvirfinder'
-  conda '/mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/deepvirfinder'
-  publishDir "${DIR_out}/${ID}/annotation_${ID}/deepvirfinder_${ID}", mode: "copy"
-  cpu 2
-  tag "${ID}"
-
-  input: tuple val(ID), path(fasta)
-  output: tuple val(ID), path("deepvirfinder.tsv")
-
-  script:
-  """
-  set +e
-  set +o pipefail
-
-  cp ${fasta} ./${ID}.fasta
-  if python3.6 /mnt/scgc_nfs/opt/deepvirfinder/DeepVirFinder/dvf.py -i ${ID}.fasta -o output -l 1500 -c ${task.cpus};
-  then
-    echo "DeepFirFinder worked, copying output files"
-    cp output/${ID}.fasta_gt1500bp_dvfpred.txt ./deepvirfinder.tsv
-  else
-    echo "WARNING: DeepFirFinder failed, but making dummy files to trigger next process in pipeline."
-    # Rationale: So that results from the parallel process--VirSorter--can still get analyzed by next process in pipeline.
-    echo "name\tlen\tscore\tpvalue" > ./deepvirfinder.tsv  # Make empty table
-  fi
-  """ }
-
 */
-
-process PROKKA_v1_14_6 {
-    container 'quay.io/biocontainers/prokka:1.14.6--pl5262hdfd78af_1'
-    errorStrategy 'finish'
-    tag "${ID}"
-    publishDir { "${params.output}/${ID}/annotation_${ID}" }, mode: params.publishmode
-    input: tuple val(ID), path(contigs), val(translation_table)
-    output:
-        tuple val(ID), path("prokka_${ID}"), emit: dir
-        tuple val(ID), path("prokka_${ID}/${ID}.gff"), emit: gff
-        tuple val(ID), path("prokka_${ID}/${ID}.faa"), emit: faa
-    shell:
-    '''
-    prokka --gcode !{translation_table} --outdir prokka_!{ID} --prefix !{ID} --locustag !{ID} --quiet --compliant --force --proteins !{params.prokka} --cpus !{task.cpus} !{contigs}
-    ''' }
-
-process PROKKA_GFF_2_TSV{
-    tag "${ID}"
-    errorStrategy 'finish'
-    // pandas alone (the old container here) is missing Bio.SeqIO, which this script's
-    // coding-density calc needs — mulled combo pins pandas=1.5.2, biopython=1.79, numpy=1.23.5.
-    container 'quay.io/biocontainers/mulled-v2-1e9d4f78feac0eb2c8d8246367973b3f6358defc:ebca4356a18677aaa2c50f396a408343200e514b-0'
-    publishDir { "${params.output}/${ID}/annotation_${ID}" }, mode: params.publishmode, pattern: "*tsv"
-    input: tuple val(ID), path(gff), path(contigs)
-    output:
-        tuple val(ID), path("comprehensive_prokka_${ID}.tsv"), emit: tsv
-        path("prokka_stats_${ID}.csv"), emit: countfile
-    script: template "prokka_gff_2_tsv.py" }
