@@ -63,6 +63,19 @@ params.contam_min_percid=95.0 // for BLASTn on contigs
 // BWA/BLAST indexes are auto-detected next to contam_ref_fasta; the download only runs when they (or the fasta itself) are missing.
 
 //#    VIRAL
+params.DB_genomad_v1_11_1 = "/mnt/scgc_nfs/ref/genomad/genomad_1.11.1/genomad_db/"
+params.viralrecall_db = "/mnt/scgc_nfs/ref/viralrecall/hmm"
+params.quast_ecoli_MG1655 = "/mnt/scgc_nfs/ref/atrandi/ec_mg1655_refgenome.fasta"
+params.quast_ecoli_ref_806 = "/mnt/scgc/scgc_nfs/ref/ecoli/Eschericia_coli_K12_DH1_ATCC33849.fasta"
+params.quast_mruber_ref_840 = "/mnt/scgc/scgc_nfs/ref/mruber/Meiothermus_ruber_DSM_1279.fasta"
+params.quast_pmarinus_ref_847 = "/mnt/scgc/scgc_nfs/ref/pmarinas/Prochlorococcus_CCMP1375.fasta"
+params.gtdb = "/mnt/scgc_nfs/ref/gtdb/release207" //release207 = db version for gtdbtk_2_0_0
+params.prokka = "/mnt/scgc_nfs/ref/uniprot_swissprot_prokka.fasta"
+params.silva_blastdb = '/mnt/scgc_nfs/ref/silva_rrna/v128/silvamod128.fasta'
+params.silva_map = '/mnt/scgc_nfs/ref/silva_rrna/v128/silvamod128.map'
+params.silva_tree = '/mnt/scgc_nfs/ref/silva_rrna/v128/silvamod128.tre'
+params.dram_db = '/mnt/scgc_nfs/ref/dram/'
+params.gunc_db = '/mnt/scgc_nfs/ref/gunc/gunc_db_progenomes2.1.dmnd'
 params.PATH_hmm = "/mnt/databases/scgc/EggNOGdb/nog.hmm"
 params.PATH_annot = "/mnt/databases/scgc/EggNOGdb/nog_annotation_virupdated.tsv"
 params.PATH_eggnog_hmm = "/mnt/databases/scgc/EggNOGdb/nog.hmm"
@@ -71,6 +84,13 @@ params.PATH_EggNOG_hmms_2_taxonomy = "/mnt/scgc/EggNOGdb/nog_annotation_virupdat
 
 //#.    ANNOTATION
 params.prokka = "./annot_database/uniprot_swissprot_prokka.fasta"
+
+def maxContigLength(Path fasta) {
+  fasta.splitFasta( record:[ seqString: true ] ) // Nextflow has a similarly named method for files which follows the same input as the channel operator
+    *.seqString // Returns the values from the Map, i.e. the sequences
+    *.size()    // Returns the size of each string
+    .max()
+}
 
 workflow {
 
@@ -271,10 +291,11 @@ workflow {
         .collectFile(name: 'all_stepwise_counts.csv', storeDir: "${params.output}/sample_tracking", seed: COUNT_HEADER, cache: false, sort: false)
 
     // Note, we run the viral pipeline on UNTRIMMED assemblies that have a max contig bigger than 1500.
-    /*
     if ( params.viral == true ) {
 
-        GENOMAD_v1_11_1(RENAME_CAPSULE_CONTIGS.out.filter({ maxContigLength(it[1]) > 1500 }))
+        CH_FINAL_CONTIGS = TRIM_CONTIGS.out.trimmed_contigs.filter({ it[1].size()>0 })
+        GENOMAD_v1_11_1(CH_FINAL_CONTIGS.filter({ maxContigLength(it[1]) > 1500 }))
+        /*
         PARSE_GENOMAD(GENOMAD_v1_11_1.out)
         LOG_GENOMAD(PARSE_GENOMAD.out.collect())
 
@@ -284,12 +305,12 @@ workflow {
         LOG_CELL_OR_VIRUS(EGGNOG_HITS_TO_CELL_OR_VIRUS.out.countfile.collect())
 
         // Other viral tools
-        VIRALRECALL2(CH_ID_library_finalFasta)
-        VIRSORTER_v2_2_3(CH_ID_library_finalFasta)
-        DEEPVIRFINDER(CH_ID_library_finalFasta)
-        CHECKV_v1_0_1(CH_ID_library_finalFasta) }
-    */
-
+        VIRALRECALL2(CH_FINAL_CONTIGS)
+        VIRSORTER_v2_2_3(CH_FINAL_CONTIGS)
+        DEEPVIRFINDER(CH_FINAL_CONTIGS)
+        CHECKV_v1_0_1(CH_FINAL_CONTIGS) }
+        */
+    }
     ASSEMBLY_STATS_TABULATOR(CH_all_counts)
 }
 
@@ -899,19 +920,19 @@ process PARSE_GENOMAD {
     with open(PATH_out, "w") as handle:
         handle.write("Viral_bp_geNomad,"+str(LEN_virus)+","+ID+newline+"Viruses_geNomad,"+ str(NUM_virus) +","+ID+newline+"Plasmid_bp_geNomad,"+ str(LEN_plasmid) +","+ID+newline+'Plasmids_geNomad,' +str(NUM_plasmid)+','+ID+newline)
     """ }
-
+*/
 process GENOMAD_v1_11_1 {
   tag "${ID}"
-  errorStrategy: "terminate"
+  errorStrategy "terminate"
   beforeScript 'module load anaconda; source activate /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/genomad_1.11.1'
   // Camargo, A. P., Roux, S., Schulz, F., Babinski, M., Xu, Y., Hu, B., Chain, P. S. G., Nayfach, S., & Kyrpides, N. C. — Nature Biotechnology (2023), DOI: 10.1038/s41587-023-01953-y.
-  conda "/mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/genomad_1.11.1"
-  publishDir "${DIR_out}/${ID}/annotation_${ID}", mode: "copy"
+  container 'quay.io/biocontainers/genomad:1.11.1--pyhdfd78af_0'
+  //conda "/mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/genomad_1.11.1"
+  publishDir { "${params.output}/${ID}/annotation_${ID}" }, mode: "copy"
   cpus 4
   input: tuple val(ID), path(contigs)
   output: tuple val(ID), path("geNomad_${ID}")
-  script: "genomad end-to-end --cleanup --threads ${task.cpus} --full-ictv-lineage --splits 8 ${contigs} geNomad_${ID} ${DB_genomad_v1_11_1}" }
-*/
+  script: "genomad end-to-end --cleanup --threads ${task.cpus} --full-ictv-lineage --splits 8 ${contigs} geNomad_${ID} ${params.DB_genomad_v1_11_1}" }
 
 process PROTEINS_VS_EGGNOG_5 {
   // container='docker://quay.io/biocontainers/hmmer:3.3.2--h87f3376_2'
