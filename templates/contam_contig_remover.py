@@ -16,11 +16,18 @@ from itertools import groupby
 # toolshed/interlap aren't in the biopython image this runs in - install them here rather
 # than via a `beforeScript` directive, which runs on the host (not inside the container)
 # for the local executor this pipeline uses.
+import os
 import subprocess
+# Global site-packages isn't writable in this container, and $HOME (used for both pip's
+# cache and its --user fallback) is read-only on some compute nodes - `--target` installs
+# into an explicit, always-writable directory instead of relying on either.
+PATH_pip_target = os.path.join(os.getcwd(), ".pylibs")
 subprocess.run(
-    [sys.executable, "-m", "pip", "install", "--quiet", "toolshed==0.4.8", "interlap==0.2.7"],
+    [sys.executable, "-m", "pip", "install", "--quiet", "--no-cache-dir",
+     "--target", PATH_pip_target, "toolshed==0.4.8", "interlap==0.2.7"],
     check=True,
 )
+sys.path.insert(0, PATH_pip_target)
 from toolshed import nopen, reader
 from interlap import InterLap
 

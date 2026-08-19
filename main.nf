@@ -23,8 +23,8 @@ params.output ="./results/"
 
 // MODES
 params.dev = false
-params.dev_num_capsules = 3 // how many capsules --dev carries into assembly
-params.viral = false
+params.dev_num_capsules = 10 // how many capsules --dev carries into assembly
+params.viral = true
 
 // Defaults
 params.publishmode = 'symlink'
@@ -239,6 +239,12 @@ workflow {
     PROKKA_v1_14_6(TRIM_CONTIGS.out.trimmed_contigs.filter({ it[1].size()>0 }).join(CH_translation_table))
 
     PROKKA_GFF_2_TSV(PROKKA_v1_14_6.out.gff.join(TRIM_CONTIGS.out.trimmed_contigs.filter({ it[1].size()>0 })))
+    
+    // Alaina's viral vs. cellular predictor
+    PROTEINS_VS_EGGNOG_5(PROKKA_v1_14_6.out.faa.filter({ it[1].size()>0 })) // ignore .faa containing no proteins
+    EGGNOG_HITS_TO_CELL_OR_VIRUS(PROTEINS_VS_EGGNOG_5.out.filter({ it[1].size()>2350 })) // only keep outputs where hitsTXT file is over 13 lines long (<= 13 means no hits)
+    LOG_CELL_OR_VIRUS(EGGNOG_HITS_TO_CELL_OR_VIRUS.out.countfile.collect())
+    
     //LOG_PROKKA(PROKKA_GFF_2_TSV.out.countfile.collect())
     
     // Combine every stepwise count file into one, earliest stage first. Each one already
@@ -892,14 +898,15 @@ process GENOMAD_v1_11_1 {
   input: tuple val(ID), path(contigs)
   output: tuple val(ID), path("geNomad_${ID}")
   script: "genomad end-to-end --cleanup --threads ${task.cpus} --full-ictv-lineage --splits 8 ${contigs} geNomad_${ID} ${DB_genomad_v1_11_1}" }
+*/
 
-process PROTEINS_VS_EGGNOG {
+process PROTEINS_VS_EGGNOG_5 {
   // container='docker://quay.io/biocontainers/hmmer:3.3.2--h87f3376_2'
   // installation notes: conda create --prefix /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/hmmer_3.4 -c conda-forge -c bioconda hmmer=3.4 pandas numpy gzip
   beforeScript 'module load anaconda; source activate /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/hmmer_3.4'
   conda '/mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/hmmer_3.4'
-publishDir "${DIR_out}/${ID}/annotation_${ID}/eggNOG_${ID}", mode: params.publishmode
-  errorStrategy: 'ignore'
+publishDir { "${params.output}/${ID}/annotation_${ID}/eggNOG_${ID}" }, mode: params.publishmode
+  errorStrategy 'ignore'
   cpus 2 // 6
   memory "50.GB"
   tag "${ID}"
@@ -910,16 +917,16 @@ publishDir "${DIR_out}/${ID}/annotation_${ID}/eggNOG_${ID}", mode: params.publis
  
   script:
   """
-  hmmsearch -E 0.00001 --cpu ${task.cpus} -o stdout.log --tblout proteins_hmmsearch_v_EggNOGdb_${ID}.txt ${PATH_hmm} ${faa}
+  hmmsearch -E 0.00001 --cpu ${task.cpus} -o stdout.log --tblout proteins_hmmsearch_v_EggNOGdb_${ID}.txt ${params.PATH_hmm} ${faa}
   rm stdout.log
   gzip proteins_hmmsearch_v_EggNOGdb_${ID}.txt
   """ }
-
+  
 process EGGNOG_HITS_TO_CELL_OR_VIRUS {
     container = 'brwnj/kmernorm:v1.0.0'
-    publishDir "${DIR_out}/${ID}/annotation_${ID}/eggNOG_${ID}", mode: params.publishmode
+    publishDir { "${params.output}/${ID}/annotation_${ID}/eggNOG_${ID}" }, mode: params.publishmode
     memory '50.GB'
-    errorStrategy: 'terminate'
+    errorStrategy 'terminate'
     input: tuple val(ID), path(hitsTXT)
     output:
         tuple val(ID), path("${ID}_proteins_hmmsearched_against_eggNOG.csv"), path("${ID}_eggnog.count"), emit: tsv                            
@@ -937,7 +944,7 @@ process EGGNOG_HITS_TO_CELL_OR_VIRUS {
     
     PATH_hits = "${hitsTXT}"
     
-    PATH_annot = "/mnt/databases/scgc/EggNOGdb/nog_annotation_virupdated.tsv"
+    PATH_annot = "${params.PATH_annot}"
     DF_annot = pd.read_csv(PATH_annot, sep=TAB)
     
     PATH_out_csv = Sample_ID + "_proteins_hmmsearched_against_eggNOG.csv"
@@ -1007,11 +1014,12 @@ process EGGNOG_HITS_TO_CELL_OR_VIRUS {
     """ }
 
 process LOG_CELL_OR_VIRUS {
-    publishDir "${DIR_out}/sample_tracking/3_assemblies", mode: "copy"; errorStrategy: 'terminate'; queue: "normal"
+    publishDir {"${params.output}/sample_tracking/3_assemblies"}, mode: "copy"; errorStrategy 'terminate'; queue "normal"
     input: path(countfiles)
     output: path("10_cell_or_virus_stats.csv")
     shell: ''' echo "Metric,Count,Sample_ID" > 10_cell_or_virus_stats.csv; for LINE in !{countfiles}; do cat ${LINE} >> 10_cell_or_virus_stats.csv; done ''' }
 
+/*
 process PARSE_DEEPVIRFINDER_AND_VIRSORTER {
   errorStrategy 'ignore'
   container 'brwnj/kmernorm:v1.0.0'
@@ -1151,6 +1159,7 @@ process PROKKA_v1_14_6 {
     output:
         tuple val(ID), path("prokka_${ID}"), emit: dir
         tuple val(ID), path("prokka_${ID}/${ID}.gff"), emit: gff
+        tuple val(ID), path("prokka_${ID}/${ID}.faa"), emit: faa
     shell:
     '''
     prokka --gcode !{translation_table} --outdir prokka_!{ID} --prefix !{ID} --locustag !{ID} --quiet --compliant --force --proteins !{params.prokka} --cpus !{task.cpus} !{contigs}
