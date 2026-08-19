@@ -1,6 +1,6 @@
 #!/usr/bin/env nextflow
 //
-// GORG-Dark SAG Assembly
+// SAGs_from_microcapsules: a Nextflow pipeline for single-cell genome assembly and annotation from Atrandi combinatorial barcoded Illumina reads
 // Copyright (C) 2026  Greg Gavelis
 //
 // This program is free software: you can redistribute it and/or modify
@@ -25,6 +25,7 @@ params.output ="./results/"
 params.dev = false
 params.dev_num_capsules = 10 // how many capsules --dev carries into assembly
 params.viral = true
+params.target_IDs = "" // comma-separated capsule IDs to restrict downstream processing to (e.g. "4_AACCGGTT,7_TTGGCCAA"); empty runs every capsule
 
 // Defaults
 params.publishmode = 'symlink'
@@ -63,6 +64,7 @@ params.contam_min_percid=95.0 // for BLASTn on contigs
 
 //#    VIRAL
 params.PATH_hmm = "/mnt/databases/scgc/EggNOGdb/nog.hmm"
+params.PATH_annot = "/mnt/databases/scgc/EggNOGdb/nog_annotation_virupdated.tsv"
 params.PATH_eggnog_hmm = "/mnt/databases/scgc/EggNOGdb/nog.hmm"
 params.TSV_eggnog_annot = "/mnt/databases/scgc/EggNOGdb/nog_annotation.tsv"
 params.PATH_EggNOG_hmms_2_taxonomy = "/mnt/scgc/EggNOGdb/nog_annotation_virupdated.tsv" // Manually updated by Alaina to make some viral domains bacteria (since EggNOG misannotated those)
@@ -133,9 +135,20 @@ workflow {
     // --dev is actually on: toSortedList() has to collect the whole channel before re-emitting,
     // which would otherwise force every capsule through demux before any of them could start
     // assembly — fine for a small --dev subset, not something a full production run should pay.
-    CH_fastq = params.dev
-        ? CH_fastq.toSortedList { a, b -> a[0] <=> b[0] }.flatMap { it }.take(params.dev_num_capsules)
-        : CH_fastq
+    // --target_IDs restricts processing to an explicit, comma-separated capsule ID list
+    // instead of --dev's numeric cap -- for rerunning/debugging specific known capsules
+    // without waiting on the rest of the pool. Takes precedence over --dev when both are
+    // set. Like --dev's take() below, this is a pure filter on an already-fully-demultiplexed
+    // channel: it changes which capsules enter TRIM_BARCODE onward, not any per-capsule
+    // task's own inputs, so it can't invalidate -resume caches for capsules it lets through.
+    if (params.target_IDs) {
+        def SET_target_IDs = params.target_IDs.tokenize(',')*.trim() as Set
+        CH_fastq = CH_fastq.filter { ID, r1, r2 -> ID in SET_target_IDs }
+    } else {
+        CH_fastq = params.dev
+            ? CH_fastq.toSortedList { a, b -> a[0] <=> b[0] }.flatMap { it }.take(params.dev_num_capsules)
+            : CH_fastq
+    }
 
     TRIM_BARCODE(CH_fastq)
     CH_fastq = TRIM_BARCODE.out
