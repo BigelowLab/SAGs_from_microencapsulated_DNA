@@ -841,7 +841,11 @@ process CHECKM_v1_1_9 {
     // the same pattern and why. --reduced_tree's own guarantee is only "<16GB", so this
     // covers that range across two attempts rather than assuming a single number.
     memory { 6.GB * task.attempt }
-    maxForks 1 // keeps memory-heavy retries from stacking across samples regardless of environment
+    // No maxForks: on a real multi-capsule pool (esp. under a grid executor) it serialized
+    // CheckM to one task at a time, which also stalled PROKKA downstream (gated on
+    // CH_translation_table from CHECKM_v1_1_9.out). At 6 GB/task the OOM-retry stacking it
+    // was guarding against isn't a concern; cap concurrency via the executor's queueSize
+    // (or a withName maxForks in a machine-specific config) if a laptop needs it.
     errorStrategy { task.exitStatus in [137, 140] ? 'retry' : 'terminate' }
     maxRetries 3
     container 'quay.io/biocontainers/checkm-genome:1.1.9--pyhdfd78af_0'
