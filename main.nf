@@ -937,7 +937,9 @@ process SSU_GET_GENE {
 process SSU_CLASSIFIER {
     tag "${ID}"
     container 'quay.io/biocontainers/biopython:1.84'
-    errorStrategy 'finish'
+    // 'ignore' not 'finish' (pilot used 'finish'): on a full ~1900-capsule pool a single
+    // malformed SSU shouldn't halt everything — that capsule just gets no SSU classification.
+    errorStrategy 'ignore'
     publishDir { "${params.output}/${ID}/annotation_${ID}/ssu_recovery_${ID}" }, mode: params.publishmode
     input: tuple val(ID), path(ssu_hits), path(ssu)
     output:
@@ -952,7 +954,7 @@ process SSU_CLASSIFIER {
 process PARSE_CLASSIFIER {
     tag "${ID}"
     container 'quay.io/biocontainers/pandas:2.2.1'
-    errorStrategy 'finish'
+    errorStrategy 'ignore'
     input: tuple val(ID), path(ssu_tsv)
     output: path("${ID}_ssu.count"), emit: countfile
     script:
@@ -973,6 +975,10 @@ process PARSE_CLASSIFIER {
 process GTDBTK_v2_0_0 {
     tag "${ID}"
     container 'quay.io/biocontainers/gtdbtk:2.0.0--pyhdfd78af_1'
+    // 'ignore': a tiny/junk assembly that clears params.gtdbtk_min_bp but has no ORFs makes
+    // gtdbtk classify_wf hard-exit 1 ("no genomes to process" — Prodigal called 0 genes).
+    // That's deterministic, so retrying is pointless; that capsule just gets no GTDB row.
+    errorStrategy 'ignore'
     // Sized for the Bigelow cluster (charlie). classify_wf's pplacer step against GTDB r207 is
     // the memory driver; tune to your own node sizes if running elsewhere.
     memory '128 GB'

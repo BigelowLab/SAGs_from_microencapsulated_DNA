@@ -91,11 +91,18 @@ class Tree(object):
 		for child in self.get_all_children(self.root):
 			self.node_ids[child.name] = child
 		# why not just remove these from the map?
+		# NOTE: the doubled backslashes below are deliberate and must stay doubled.
+		# Nextflow renders this template through a Groovy engine that resolves backslash
+		# escapes before Python ever sees the file, and a lone backslash followed by a
+		# letter is a fatal template parse error (token recognition error) -- even inside
+		# a comment, so this note is worded to avoid writing one. Doubled, each collapses
+		# to a single backslash in the rendered script; Python 3.12 warns (SyntaxWarning,
+		# unknown escape) but runs it correctly, and re gets the character classes intact.
 		accession_re = [
-			re.compile(r"\D\D\d\d\d\d\d\d\Z"),
-			re.compile(r"\D\d\d\d\d\d\Z"),
-			re.compile(r"\D\D\D\D\d\d\d\d\d\d\d\d\d\Z"),
-			re.compile(r"\D\D\D\D\d\d\d\d\d\d\d\d\Z"),
+			re.compile("\\D\\D\\d\\d\\d\\d\\d\\d\\Z"),
+			re.compile("\\D\\d\\d\\d\\d\\d\\Z"),
+			re.compile("\\D\\D\\D\\D\\d\\d\\d\\d\\d\\d\\d\\d\\d\\Z"),
+			re.compile("\\D\\D\\D\\D\\d\\d\\d\\d\\d\\d\\d\\d\\Z"),
 		]
 		# Read nodes from .map file (id\t name\t cutoff)
 		with open(mapfile) as fh:
