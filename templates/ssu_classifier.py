@@ -92,10 +92,10 @@ class Tree(object):
 			self.node_ids[child.name] = child
 		# why not just remove these from the map?
 		accession_re = [
-			re.compile("\\D\\D\\d\\d\\d\\d\\d\\d\\Z"),
-			re.compile("\\D\\d\\d\\d\\d\\d\\Z"),
-			re.compile("\\D\\D\\D\\D\\d\\d\\d\\d\\d\\d\\d\\d\\d\\Z"),
-			re.compile("\\D\\D\\D\\D\\d\\d\\d\\d\\d\\d\\d\\d\\Z"),
+			re.compile(r"\D\D\d\d\d\d\d\d\Z"),
+			re.compile(r"\D\d\d\d\d\d\Z"),
+			re.compile(r"\D\D\D\D\d\d\d\d\d\d\d\d\d\Z"),
+			re.compile(r"\D\D\D\D\d\d\d\d\d\d\d\d\Z"),
 		]
 		# Read nodes from .map file (id\t name\t cutoff)
 		with open(mapfile) as fh:
