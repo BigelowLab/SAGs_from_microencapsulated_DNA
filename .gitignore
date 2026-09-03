@@ -7,3 +7,4 @@ input/
 results/
 .DS_Store
 status_of_assembly.pbs
+ANNOTATION_PORT_ROADMAP.md

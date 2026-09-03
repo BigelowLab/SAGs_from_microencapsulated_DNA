@@ -2,7 +2,9 @@
 
 ![Pipeline smoke test](https://github.com/BigelowLab/GORG-Dark-SAG-assembly/actions/workflows/stub-run.yml/badge.svg)
 
-A Nextflow pipeline that takes paired-end Illumina reads from Atrandi combinatorial-barcoded single-amplified genome (SAG) libraries through to decontaminated assemblies: Atrandi demultiplexing → quality control → trimming → complexity filtering → k-mer normalization → host/contaminant read removal → assembly → contig trimming/deduplication → host/contaminant contig removal → genome completeness estimation → a single per-sample stats table.
+A Nextflow pipeline that takes paired-end Illumina reads from Atrandi combinatorial-barcoded single-amplified genome (SAG) libraries through to decontaminated, annotated assemblies: Atrandi demultiplexing → quality control → trimming → complexity filtering → k-mer normalization → host/contaminant read removal → assembly → contig trimming/deduplication → host/contaminant contig removal → genome completeness estimation → Prokka annotation → SSU (16S) recovery + classification → GTDB-Tk taxonomy → a single per-sample stats table.
+
+This is the archival pipeline for the paper *"Single-particle genomics uncovers abundant non-canonical marine viruses from nanolitre volumes."*
 
 Built for the GORG-Dark project (single-cell genomics of deep-ocean prokaryotes), but the decontamination steps are general-purpose against any BWA/BLAST-indexable reference.
 
@@ -81,6 +83,10 @@ Each pair is an **Atrandi combinatorial-barcode pool**, not a single SAG — man
 | `--assembly_minlength` | `1000` | Minimum contig length kept after assembly |
 | `--assembly_lefttrim` / `--assembly_righttrim` | `200` / `200` | bp trimmed off each contig end |
 | `--kmernorm_opts` | `-k 21 -t 30 -c 3` | Passed directly to `kmernorm` |
+| `--prokka` | (cluster path) | Trusted-protein FASTA passed to Prokka `--proteins` (SwissProt) |
+| `--silva_blastdb` / `--silva_map` / `--silva_tree` | (cluster paths) | SILVA rRNA BLAST database + CREST `.map`/`.tree` for SSU classification — **you must supply these** (see [Reference data](#reference-data)) |
+| `--gtdb` | (cluster path) | GTDB-Tk reference data directory (**GTDB r207**, the release GTDB-Tk 2.0.0 expects) — **you must supply this** |
+| `--gtdbtk_min_bp` | `2500` | Skip GTDB-Tk on assemblies smaller than this (total bases) |
 
 ## Pipeline stages
 
@@ -90,8 +96,12 @@ Each pair is an **Atrandi combinatorial-barcode pool**, not a single SAG — man
 3. **Read decontamination** — aligns to the reference with BWA, removes anything that hits it
 4. **Assembly** — SPAdes (`--sc --careful`, single-cell mode)
 5. **Contig trimming & dedup** — length filter, end-trimming, drops exact reverse-complement duplicate contigs (a known SPAdes artifact that gets genomes rejected by NCBI/GenBank)
-6. **Contig decontamination** — BLASTs trimmed contigs against the reference, removes hits
+6. **Contig decontamination** — BLASTs trimmed contigs against the reference, excises contaminant regions → `results/<ID>/SCGC_<ID>_contigs.fasta`, the final trimmed + decontaminated assembly every step below runs on
 7. **Stats** — assembly length/GC%/max contig length, plus CheckM genome completeness
+8. **Annotation** — Prokka (`--proteins` SwissProt), with a comprehensive per-CDS TSV and CDS/tRNA/coding-density stats
+9. **SSU recovery + classification** — megablast the assembly against SILVA, pull the best SSU (16S) region out of the hit contig, then CREST-style lowest-common-ancestor classification against the SILVA tree (top 3 recovered SSUs recorded)
+10. **GTDB-Tk taxonomy** — `gtdbtk classify_wf` (v2.0.0 / GTDB r207), on assemblies ≥ `--gtdbtk_min_bp`; records the classification and the multi-copy marker-gene count
+11. **Viral classification** — geNomad, VirSorter2, CheckV, DeepVirFinder, ViralRecall2 (gated by `--viral`, default on)
 
 Each stage's per-sample counts land in `results/sample_tracking/stepwise_counts/`, and everything gets combined into one final `results/assembly_stats.csv` — one row per sample.
 
@@ -103,6 +113,18 @@ Read and contig decontamination both need a reference to screen against (default
 > DOI: [10.5281/zenodo.21682938](https://doi.org/10.5281/zenodo.21682938)
 
 That download (fasta + prebuilt BWA index) is a one-time cost of a few GB; a matching BLAST database is then built locally once and also cached in place. Both are skipped automatically on every run after the first. Point `--contam_ref_fasta` at an already-populated path (e.g. a shared location on a cluster) to avoid downloading a fresh copy per clone.
+
+### Annotation / classification databases (not auto-downloaded)
+
+Unlike the contaminant reference, these are **not** fetched by the pipeline — download them yourself and point the matching params at them. They are only needed by the annotation/classification stages (8–10); the pipeline runs without them if you stop at stage 7, and `-stub-run` does not need them at all.
+
+| Param(s) | What | Source |
+|---|---|---|
+| `--prokka` | SwissProt trusted-protein FASTA | UniProt |
+| `--silva_blastdb`, `--silva_map`, `--silva_tree` | SILVA rRNA BLAST DB + CREST `.map`/`.tree` | [SILVA](https://www.arb-silva.de/) / CREST (`silvamod` release) |
+| `--gtdb` | GTDB-Tk reference data, **release 207** (the release GTDB-Tk 2.0.0 requires) | [GTDB-Tk data downloads](https://ecogenomics.github.io/GTDBTk/installing/index.html#gtdb-tk-reference-data) |
+
+> **TODO:** publish the SILVA rRNA DB and the Prokka SwissProt DB used for the paper to Zenodo, and switch `--silva_*` / `--prokka` to the same auto-download bootstrap the contaminant reference uses.
 
 ## Continuous integration
 

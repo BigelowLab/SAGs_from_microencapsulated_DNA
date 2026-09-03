@@ -21,7 +21,11 @@ must be preserved and included in the distributed image/artifact.
 | [SPAdes](https://github.com/ablab/spades) | 3.15.2 | GPL-2.0-only | |
 | [CheckM](https://github.com/Ecogenomics/CheckM) | 1.1.9 | GPL-3.0-or-later | CheckM v1 is unmaintained upstream (superseded by CheckM2); this does not affect its license terms. |
 | [Prokka](https://github.com/tseemann/prokka) | 1.14.6 | GPL-3.0-or-later | At runtime, invokes several other external annotation tools (BLAST+, HMMER, Aragorn, Infernal, minced, Prodigal, tbl2asn) as separate binaries within its container, each under its own license — not covered individually here. |
-| [Biopython](https://biopython.org/) | 1.79 | Biopython License Agreement (permissive; some files dual-licensed BSD-3-Clause) | Used by `templates/prokka_gff_2_tsv.py` (`Bio.SeqIO`) for coding-density calculation. |
+| [BLAST+](https://blast.ncbi.nlm.nih.gov/) | 2.11.0 | Public domain (U.S. Government work) / NCBI | Used for SSU megablast against SILVA and contig decontamination. |
+| [samtools / pysam](https://github.com/pysam-developers/pysam) | pysam 0.24.0 | MIT (pysam) / MIT + BSD (htslib) | `pysam.faidx`/`FastaFile` used by `SSU_GET_GENE` to excise the SSU region from its hit contig. |
+| [GTDB-Tk](https://github.com/Ecogenomics/GTDBTk) | 2.0.0 | GPL-3.0-or-later | Pinned to 2.0.0 (with GTDB reference data **release 207**) for fidelity to the published results, not because it is current. Reference data (GTDB) is released under CC BY-SA 4.0 and is user-supplied, not redistributed here. |
+| [SILVA rRNA database](https://www.arb-silva.de/) | silvamod (v128-era) | CC BY 4.0 (SILVA) | User-supplied reference for SSU classification; not redistributed by this pipeline. The `ssu_classifier.py` LCA logic is CREST-derived. |
+| [Biopython](https://biopython.org/) | 1.79 / 1.84 | Biopython License Agreement (permissive; some files dual-licensed BSD-3-Clause) | Used by `templates/prokka_gff_2_tsv.py` (`Bio.SeqIO`, coding-density calc) and `templates/ssu_classifier.py` (`Bio.Phylo`/`Bio.SeqIO`, SSU LCA classification). |
 | [pandas](https://pandas.pydata.org/) | — | BSD-3-Clause | Version varies by container across processes (1.5.2 in the mulled image backing `PROKKA_GFF_2_TSV`, 2.2.1 elsewhere, e.g. `ASSEMBLY_STATS_TABULATOR`). |
 | [NumPy](https://numpy.org/) | — | BSD-3-Clause | Bundled with pandas in the containers above; not directly imported by this pipeline's own scripts. |
 
@@ -39,4 +43,4 @@ must be preserved and included in the distributed image/artifact.
   releasing those modifications under the same GPL version (or, where the
   tool is "-or-later," a compatible later version).
 
-Last reviewed: August 2026.
+Last reviewed: September 2026.
