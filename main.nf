@@ -857,10 +857,11 @@ process CHECKM_v1_1_9 {
     output: tuple val(ID), path("checkm_${ID}")
     script:
     """
-    # CheckM's mp.Manager() binds an AF_UNIX socket under \$TMPDIR; concurrent CheckM tasks
-    # that share a node's /tmp (Singularity autoMounts) collide -- OSError: [Errno 98] Address
-    # already in use. Give each task a private, node-local TMPDIR so the socket paths can't
-    # clash. (Fix ported from ggavelis/scgc-sag-assembly-and-annotation.)
+    # Concurrent CheckM tasks on one node hit "OSError: [Errno 98] Address already in use"
+    # in mp.Manager(). The real fix is `singularity.newPidNamespace = false` in the run's
+    # nextflow.config (see that file) -- without a private PID namespace CheckM's manager
+    # process gets a unique host PID, so its abstract socket (\\0listener-<pid>-0) can't
+    # clash. This private TMPDIR is just hygiene on top (clean matplotlib cache per task).
     mkdir -p /var/tmp/checkm_mp_${ID}_${task.attempt}
     export TMPDIR=/var/tmp/checkm_mp_${ID}_${task.attempt}
     mkdir tmp_dir; cp ${contigs} ./tmp_dir/final_contigs_${ID}.fasta
