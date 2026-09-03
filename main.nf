@@ -846,7 +846,10 @@ process CHECKM_v1_1_9 {
     // CH_translation_table from CHECKM_v1_1_9.out). At 6 GB/task the OOM-retry stacking it
     // was guarding against isn't a concern; cap concurrency via the executor's queueSize
     // (or a withName maxForks in a machine-specific config) if a laptop needs it.
-    errorStrategy { task.exitStatus in [137, 140] ? 'retry' : 'terminate' }
+    // Non-OOM failures ignore (was 'terminate' — a single junk-genome CheckM failure then
+    // killed the whole pool run); that capsule just gets no completeness / no translation
+    // table, so PROKKA skips it too.
+    errorStrategy { task.exitStatus in [137, 140] ? 'retry' : 'ignore' }
     maxRetries 3
     container 'quay.io/biocontainers/checkm-genome:1.1.9--pyhdfd78af_0'
     publishDir { "${params.output}/${ID}/QC_${ID}" }, mode: params.publishmode
@@ -854,9 +857,16 @@ process CHECKM_v1_1_9 {
     output: tuple val(ID), path("checkm_${ID}")
     script:
     """
+    # CheckM's mp.Manager() binds an AF_UNIX socket under \$TMPDIR; concurrent CheckM tasks
+    # that share a node's /tmp (Singularity autoMounts) collide -- OSError: [Errno 98] Address
+    # already in use. Give each task a private, node-local TMPDIR so the socket paths can't
+    # clash. (Fix ported from ggavelis/scgc-sag-assembly-and-annotation.)
+    mkdir -p /var/tmp/checkm_mp_${ID}_${task.attempt}
+    export TMPDIR=/var/tmp/checkm_mp_${ID}_${task.attempt}
     mkdir tmp_dir; cp ${contigs} ./tmp_dir/final_contigs_${ID}.fasta
     checkm lineage_wf --reduced_tree -f checkm_${ID}/completeness_${ID}.tsv --tab_table -q -x fasta -t ${task.cpus} tmp_dir checkm_${ID}
     rm -r tmp_dir
+    rm -rf /var/tmp/checkm_mp_${ID}_${task.attempt}
     """
     stub:
     """
