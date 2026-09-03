@@ -64,7 +64,6 @@ params.contam_min_percid=95.0 // for BLASTn on contigs
 
 //#    VIRAL
 params.DB_genomad_v1_11_1 = "/mnt/scgc_nfs/ref/genomad/genomad_1.11.1/genomad_db/"
-params.viralrecall_db = "/mnt/scgc_nfs/ref/viralrecall/hmm"
 params.prokka = "/mnt/scgc_nfs/ref/uniprot_swissprot_prokka.fasta"
 params.PATH_hmm = "/mnt/databases/scgc/EggNOGdb/nog.hmm"
 params.PATH_annot = "/mnt/databases/scgc/EggNOGdb/nog_annotation_virupdated.tsv"
@@ -326,7 +325,6 @@ workflow {
         //LOG_GENOMAD(PARSE_GENOMAD.out.collect())
 
         // Other viral tools
-        VIRALRECALL2(CH_FINAL_CONTIGS)
         VIRSORTER_v2_2_3(CH_FINAL_CONTIGS)
         CHECKV_v1_0_1(CH_FINAL_CONTIGS)
         DEEPVIRFINDER(CH_FINAL_CONTIGS)
@@ -1224,27 +1222,6 @@ process LOG_CELL_OR_VIRUS {
     input: path(countfiles)
     output: path("10_cell_or_virus_stats.csv")
     shell: ''' echo "Metric,Count,Sample_ID" > 10_cell_or_virus_stats.csv; for LINE in !{countfiles}; do cat ${LINE} >> 10_cell_or_virus_stats.csv; done ''' }
-
-process VIRALRECALL2 {
-  errorStrategy 'ignore'
-  beforeScript 'module load anaconda; source activate /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/viralrecall'
-  conda '/mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/viralrecall'
-  publishDir { "${params.output}/sample_tracking/3_assemblies" }, mode: "copy"
-  cpus 4
-  tag "${ID}"
-
-  input: tuple val(ID), path(fasta)
-
-  output: tuple val(ID), path("viralrecall_${ID}"), emit: output
-    path("viralrecall_${ID}/viralrecall_${ID}.summary.tsv"), emit: tsv
-
-  script:
-  """
-  cp ${fasta} ./${ID}.fasta
-  ln -s "${params.viralrecall_db}" .
-  ln -s /mnt/scgc_nfs/opt/viralrecall/acc/ .
-  python /mnt/scgc_nfs/opt/viralrecall/viralrecall.py -i ./${ID}.fasta -p "viralrecall_${ID}" -t ${task.cpus} -c
-  """ }
 
 process VIRSORTER_v2_2_3 {
   errorStrategy 'ignore'

@@ -101,7 +101,7 @@ Each pair is an **Atrandi combinatorial-barcode pool**, not a single SAG — man
 8. **Annotation** — Prokka (`--proteins` SwissProt), with a comprehensive per-CDS TSV and CDS/tRNA/coding-density stats
 9. **SSU recovery + classification** — megablast the assembly against SILVA, pull the best SSU (16S) region out of the hit contig, then CREST-style lowest-common-ancestor classification against the SILVA tree (top 3 recovered SSUs recorded)
 10. **GTDB-Tk taxonomy** — `gtdbtk classify_wf` (v2.0.0 / GTDB r207), on assemblies ≥ `--gtdbtk_min_bp`; records the classification and the multi-copy marker-gene count
-11. **Viral classification** — geNomad, VirSorter2, CheckV, DeepVirFinder, ViralRecall2 (gated by `--viral`, default on)
+11. **Viral classification** — geNomad, VirSorter2, CheckV, DeepVirFinder (gated by `--viral`, default on)
 
 Each stage's per-sample counts land in `results/sample_tracking/stepwise_counts/`, and everything gets combined into one final `results/assembly_stats.csv` — one row per sample.
 

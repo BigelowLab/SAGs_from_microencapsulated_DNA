@@ -17,7 +17,7 @@ use of this pipeline's containers or results — see the bolded license column
 and the "Summary of obligations" at the end.** In particular: **geNomad** and
 **DeepVirFinder** restrict *use* to academic / non-commercial contexts;
 **Pheniqs**'s repository license conflicts with its source-file headers; and
-**KMERNORM** and **ViralRecall** could not be license-verified. Several images
+**KMERNORM** could not be license-verified. Several images
 (`jiarong/virsorter:latest`, `replikation/deepvirfinder:latest`,
 `brwnj/kmernorm:v1.0.0`) use unpinned `:latest`-style tags and are not
 reproducible by version.
@@ -80,7 +80,6 @@ by this pipeline — their own terms still apply and are noted where relevant.
 | [VirSorter2](https://github.com/jiarong/VirSorter2) (`docker://jiarong/virsorter:latest`) | unpinned (name implies 2.2.3) | GPL-2.0-or-later | `VIRSORTER_v2_2_3` calls `virsorter run` — the VirSorter2 CLI, not the original VirSorter (`simroux/VirSorter`, a different codebase). The `:latest` tag is **not** version-pinned, so the exact build isn't guaranteed reproducible — verify the running version if that matters. |
 | [CheckV](https://bitbucket.org/berkeleylab/checkv/) | 1.0.1 | BSD-3-Clause-LBNL | `CHECKV_v1_0_1` (`end_to_end`). Modified-BSD variant used by Lawrence Berkeley National Laboratory. `params`-referenced CheckV DB is user-supplied. |
 | [DeepVirFinder](https://github.com/jessieren/DeepVirFinder) | unpinned (`replikation/deepvirfinder:latest`) | **USC-RL v1.0 — academic / non-commercial only** | `DEEPVIRFINDER` (`dvf.py`). Commercial use requires a separate paid license from the University of Southern California. Upstream ships no official container and has no numbered releases since ~2019, so the version cannot be pinned; this pipeline uses `replikation/deepvirfinder:latest`, a community image whose Dockerfile traces to the peer-reviewed "What the Phage" pipeline (`replikation/What_the_Phage`). |
-| [ViralRecall](https://github.com/faylward/viralrecall) | unpinned (host conda env `viralrecall`, `faylward/viralrecall`, no version tag) | **Unstated / unverified** | `VIRALRECALL2`. No `LICENSE` file or license statement found in the upstream repository as of this writing. An unrelated fork (`abdealijivaji/ViralRecall`) is MIT-licensed, but that is **not** the code this pipeline runs — don't assume its terms apply. `params.viralrecall_db` is a user-supplied HMM database. Unlike the other viral tools this one still runs via a `beforeScript`-activated host conda env, not a container. |
 
 Not used in the live workflow (defined but commented out, so not listed above):
 the eggNOG-based `PROTEINS_VS_EGGNOG_5` / `EGGNOG_HITS_TO_CELL_OR_VIRUS` block
@@ -108,14 +107,14 @@ the eggNOG-based `PROTEINS_VS_EGGNOG_5` / `EGGNOG_HITS_TO_CELL_OR_VIRUS` block
   that conflicts with its per-file AGPL-3.0-or-later headers. Running it as an
   external containerized program is low-risk, but resolve the conflict with the
   authors before redistributing the Pheniqs image itself.
-- **KMERNORM and ViralRecall (as actually installed here)** could not be
-  license-verified as of this writing — treat their use as at the user's own
-  discretion and risk until independently confirmed. Unpinned `:latest`-style
-  container tags (`jiarong/virsorter`, `replikation/deepvirfinder`,
-  `brwnj/kmernorm`) also mean those steps are not reproducible by version.
+- **KMERNORM (as actually installed here)** could not be license-verified as of
+  this writing — treat its use as at the user's own discretion and risk until
+  independently confirmed. Unpinned `:latest`-style container tags
+  (`jiarong/virsorter`, `replikation/deepvirfinder`, `brwnj/kmernorm`) also mean
+  those steps are not reproducible by version.
 - Reference **databases** (the Zenodo contaminant set, SILVA, GTDB, the Prokka
-  SwissProt FASTA, and the geNomad / CheckV / ViralRecall databases) are
-  user-supplied and not redistributed by this repository; their own terms
-  (SILVA CC BY 4.0, GTDB CC BY-SA 4.0, UniProt CC BY 4.0, etc.) still apply.
+  SwissProt FASTA, and the geNomad / CheckV databases) are user-supplied and not
+  redistributed by this repository; their own terms (SILVA CC BY 4.0, GTDB
+  CC BY-SA 4.0, UniProt CC BY 4.0, etc.) still apply.
 
 Last reviewed: September 2026.
