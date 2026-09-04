@@ -1,6 +1,6 @@
 # SAGs from microencapsulated DNA
 
-![Pipeline smoke test](https://github.com/BigelowLab/GORG-Dark-SAG-assembly/actions/workflows/stub-run.yml/badge.svg)
+![Pipeline smoke test](https://github.com/BigelowLab/SAGs_from_microencapsulated_DNA/actions/workflows/stub-run.yml/badge.svg)
 
 A Nextflow pipeline that takes paired-end Illumina reads from Atrandi combinatorial-barcoded single-amplified genome (SAG) libraries through to decontaminated, annotated assemblies: Atrandi demultiplexing → quality control → trimming → complexity filtering → k-mer normalization → host/contaminant read removal → assembly → contig trimming/deduplication → host/contaminant contig removal → genome completeness estimation → Prokka annotation → SSU (16S) recovery + classification → GTDB-Tk taxonomy → (optionally) viral classification, including eggNOG-based viral/cellular protein classification → a single per-sample stats table.
 
@@ -34,8 +34,8 @@ See [Reference data](#reference-data) below for how to point the pipeline's para
 ## Quick start
 
 ```bash
-git clone https://github.com/BigelowLab/GORG-Dark-SAG-assembly.git
-cd GORG-Dark-SAG-assembly
+git clone https://github.com/BigelowLab/SAGs_from_microencapsulated_DNA.git
+cd SAGs_from_microencapsulated_DNA
 ```
 
 Create a local `nextflow.config` (gitignored — machine-specific, not part of the repo):
