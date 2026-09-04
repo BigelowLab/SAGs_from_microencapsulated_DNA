@@ -104,16 +104,21 @@ Each pair is an **Atrandi combinatorial-barcode pool**, not a single SAG — man
 | `--gtdb` | (cluster path) | GTDB-Tk reference data directory (**GTDB r207**, the release GTDB-Tk 2.0.0 expects) — **you must supply this** |
 | `--gtdbtk_min_bp` | `2500` | Skip GTDB-Tk on assemblies smaller than this (total bases) |
 | `--PATH_hmm` / `--PATH_annot` | (cluster paths) | eggNOG HMM database + its annotation table, for `hmmsearch`-based viral/cellular protein classification — needed only when `--viral` is on; **you must supply these** if so (see [Reference data](#reference-data)) |
-| `--viral` | `false` | Turns on the viral classification stage (geNomad, VirSorter2, CheckV, DeepVirFinder, eggNOG). **Only set this to `true` for academic / non-commercial use** — see the warning below. |
+| `--viral` | `false` | Turns on the viral classification stage (geNomad, VirSorter2, CheckV, DeepVirFinder, eggNOG). **Only set this to `true` for academic / non-commercial use**, and it must be paired with `--i_confirm_academic_use true` (see the warning below) — the pipeline refuses to run otherwise. |
+| `--i_confirm_academic_use` | `false` | Required alongside `--viral true`; asserts your use of this pipeline and its results is academic / internal non-commercial R&D. See the warning below. |
 
 > **⚠️ `--viral true` is restricted to academic and non-commercial use.** Two of
 > the four tools in that stage carry licenses that restrict *use itself*, not
 > just redistribution: **geNomad** (Berkeley Lab Academic / Non-Commercial
 > License — internal research & development, non-commercial only) and
 > **DeepVirFinder** (USC-RL v1.0 — commercial use requires a separate paid
-> license from the University of Southern California). Confirm your use
-> qualifies before turning this on; see `THIRD_PARTY_LICENSES.md` for details.
-> This is why `--viral` now defaults to `false`.
+> license from the University of Southern California). This is why `--viral`
+> now defaults to `false`, and why turning it on requires a second, explicit
+> flag: `nextflow run main.nf --viral true --i_confirm_academic_use true`.
+> Passing `--viral true` alone makes the pipeline exit immediately with an
+> error explaining this, rather than silently running these tools. Confirm
+> your use genuinely qualifies before passing both flags; see
+> `THIRD_PARTY_LICENSES.md` for details.
 
 ## Pipeline stages
 

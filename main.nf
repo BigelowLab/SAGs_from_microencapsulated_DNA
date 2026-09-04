@@ -27,8 +27,13 @@ params.dev_num_capsules = 10 // how many capsules --dev carries into assembly
 // Defaults OFF: two of the four tools in this block (geNomad, DeepVirFinder) restrict *use*
 // itself to academic / internal non-commercial research & development, not just
 // redistribution -- see THIRD_PARTY_LICENSES.md. Only set --viral true if your use of this
-// pipeline and its results qualifies.
+// pipeline and its results qualifies -- and see the params.i_confirm_academic_use gate below,
+// which --viral true also requires.
 params.viral = false
+// A second, explicit flag --viral true must be paired with, so turning the viral block on is
+// a deliberate choice rather than an easy default to miss the license implications of. Checked
+// at the top of the workflow block below (fails fast, before any real work starts).
+params.i_confirm_academic_use = false
 params.target_IDs = "" // comma-separated capsule IDs to restrict downstream processing to (e.g. "4_AACCGGTT,7_TTGGCCAA"); empty runs every capsule
 
 // Defaults
@@ -102,6 +107,28 @@ def countBases(Path fasta) {
 }
 
 workflow {
+
+    // --viral turns on geNomad and DeepVirFinder, whose licenses restrict *use itself* (not
+    // just redistribution) to academic / internal non-commercial research & development --
+    // see THIRD_PARTY_LICENSES.md. Require a second, explicit flag so enabling it is a
+    // deliberate choice, not an easy default to run past. Fails immediately, before any real
+    // work starts.
+    if ( params.viral && !params.i_confirm_academic_use ) {
+        error("""
+        --viral true also requires --i_confirm_academic_use true.
+
+        Two of the four tools this turns on restrict *use itself* to academic / non-commercial
+        contexts, not just redistribution:
+          - geNomad:       Berkeley Lab Academic / Non-Commercial License
+          - DeepVirFinder: USC-RL v1.0 (commercial use requires a separate paid license from USC)
+
+        Re-run with both:
+          nextflow run main.nf --viral true --i_confirm_academic_use true ...
+
+        ...only if your use of this pipeline and its results genuinely qualifies as academic /
+        internal non-commercial R&D. See THIRD_PARTY_LICENSES.md for the full license details.
+        """.stripIndent())
+    }
 
     // Check inputs
     def input_dir = file(params.indir)
