@@ -40,10 +40,12 @@ params.read_threshold = 3
 params.cell_threshold = 100000000000 // effectively uncapped
 params.barcode_trim_length = 45 // TRIM_BARCODE's trim_galore --clip_R2
 // Pheniqs' default is 2048 buffered records PER feed (input or output), so with one output
-// feed pair per capsule this scales directly with capsule count — with ~1900 real capsules in
-// one pool that's ~2000x the default's memory footprint. Turned down here since PHENIQS_DEMULTIPLEX
-// OOM'd against real data at the default; raise it again if throughput becomes the bottleneck instead.
-params.pheniqs_buffer_capacity = 64
+// feed pair per capsule this scales directly with capsule count — with ~2500 real capsules in
+// one pool a big buffer × ~5000 feeds is what OOM'd PHENIQS_DEMULTIPLEX at the 2048 default.
+// 64 avoided the OOM but made the step I/O-bound (constant tiny flushes into ~5000 gzip
+// streams — hours on a full ~600M-pair pool). 512 is the middle ground, paired with the
+// bumped memory/cpus on PHENIQS_DEMULTIPLEX below (~2.5 GB of buffers at 512 × 5000 feeds).
+params.pheniqs_buffer_capacity = 512
 
 //# READ PROCESSING
 params.phred = "33"
@@ -64,16 +66,35 @@ params.contam_min_percid=95.0 // for BLASTn on contigs
 
 //#    VIRAL
 params.DB_genomad_v1_11_1 = "/mnt/scgc_nfs/ref/genomad/genomad_1.11.1/genomad_db/"
-params.viralrecall_db = "/mnt/scgc_nfs/ref/viralrecall/hmm"
 params.prokka = "/mnt/scgc_nfs/ref/uniprot_swissprot_prokka.fasta"
 params.PATH_hmm = "/mnt/databases/scgc/EggNOGdb/nog.hmm"
 params.PATH_annot = "/mnt/databases/scgc/EggNOGdb/nog_annotation_virupdated.tsv"
+
+//#    SSU (16S) RECOVERY + TAXONOMY
+// Unlike the contaminant reference (auto-downloaded from Zenodo by BWA_INDEX), these
+// databases are NOT fetched by the pipeline — supply your own and point these params at
+// them (see README "Reference data"). Defaults are the paths used on the Bigelow cluster
+// that produced the published results.
+// TODO: publish the SILVA rRNA DB and the Prokka SwissProt DB to Zenodo and switch these
+// to the same self-bootstrapping download pattern BWA_INDEX uses.
+params.silva_blastdb = "/mnt/scgc_nfs/ref/silva_rrna/v128/silvamod128.fasta"
+params.silva_map     = "/mnt/scgc_nfs/ref/silva_rrna/v128/silvamod128.map"
+params.silva_tree    = "/mnt/scgc_nfs/ref/silva_rrna/v128/silvamod128.tre"
+params.gtdb          = "/mnt/scgc_nfs/ref/gtdb/release207" // GTDB r207 — the release GTDB-Tk 2.0.0 expects; kept at 2.0.0/r207 for fidelity to the published results
+params.gtdbtk_min_bp = 2500 // skip GTDB-Tk on assemblies smaller than this (total bases)
 
 def maxContigLength(Path fasta) {
   fasta.splitFasta( record:[ seqString: true ] ) // Nextflow has a similarly named method for files which follows the same input as the channel operator
     *.seqString // Returns the values from the Map, i.e. the sequences
     *.size()    // Returns the size of each string
     .max()
+}
+
+def countBases(Path fasta) {
+  fasta.splitFasta( record:[ seqString: true ] )
+    *.seqString
+    *.size()
+    .sum()
 }
 
 workflow {
@@ -227,13 +248,22 @@ workflow {
     CH_count_trimmed_contigs = TRIM_CONTIGS.out.countfile.collectFile(name: '7_trimmed_contigcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false)
 
     CONTAM_CONTIG_FINDER(TRIM_CONTIGS.out.trimmed_contigs.filter({ it[1].size()>0 }), CH_blast_fasta, CH_blast_index) // don't move forward with empty contigs
-    CONTAM_CONTIG_REMOVER(CONTAM_CONTIG_FINDER.out.join(TRIM_CONTIGS.out.length_passing_contigs))
+    // CONTAM_CONTIG_REMOVER excises contaminant regions from the *trimmed* contigs (not
+    // length_passing_contigs), so its coordinates line up with the BLAST hits CONTAM_CONTIG_FINDER
+    // produced from those same trimmed contigs, and SCGC_<ID>_contigs.fasta is the genuinely
+    // trimmed + decontaminated assembly every downstream annotation step runs on.
+    CONTAM_CONTIG_REMOVER(CONTAM_CONTIG_FINDER.out.join(TRIM_CONTIGS.out.trimmed_contigs.filter({ it[1].size()>0 })))
     CH_count_final_contigs = CONTAM_CONTIG_REMOVER.out.countfile.collectFile(name: '8_final_contigcounts.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false)
 
-    MEASURE_SAG(TRIM_CONTIGS.out.trimmed_contigs.filter({ it[1].size()>0 })) //don't run on empty contigs file
+    // The single fully decontaminated + trimmed assembly per capsule. Everything below
+    // (stats, annotation, SSU, GTDB-Tk, viral) consumes this rather than the pre-contig-decon
+    // TRIM_CONTIGS output.
+    CH_final_contigs = CONTAM_CONTIG_REMOVER.out.contigs.filter({ it[1].size()>0 })
+
+    MEASURE_SAG(CH_final_contigs) //don't run on empty contigs file
     CH_count_sag_stats = MEASURE_SAG.out.countfile.collectFile(name: '8_sag_stats.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false)
 
-    CHECKM_v1_1_9(TRIM_CONTIGS.out.trimmed_contigs.filter({ it[1].size()>0 })) //don't run on empty contigs file
+    CHECKM_v1_1_9(CH_final_contigs) //don't run on empty contigs file
     // .map() pulls the 'Completeness' column out of CheckM's --tab_table TSV directly in Groovy
     CH_count_checkm = CHECKM_v1_1_9.out
         .map { ID, checkm_dir ->
@@ -253,41 +283,59 @@ workflow {
             tuple(ID, translation_table)
         }
     
-    PROKKA_v1_14_6(TRIM_CONTIGS.out.trimmed_contigs.filter({ it[1].size()>0 }).join(CH_translation_table))
+    PROKKA_v1_14_6(CH_final_contigs.join(CH_translation_table))
 
-    PROKKA_GFF_2_TSV(PROKKA_v1_14_6.out.gff.join(TRIM_CONTIGS.out.trimmed_contigs.filter({ it[1].size()>0 })))
-    
-    // Alaina's viral vs. cellular predictor
-    //PROTEINS_VS_EGGNOG_5(PROKKA_v1_14_6.out.faa.filter({ it[1].size()>0 })) // ignore .faa containing no proteins
-    //EGGNOG_HITS_TO_CELL_OR_VIRUS(PROTEINS_VS_EGGNOG_5.out.filter({ it[1].size()>2350 })) // only keep outputs where hitsTXT file is over 13 lines long (<= 13 means no hits)
-    //LOG_CELL_OR_VIRUS(EGGNOG_HITS_TO_CELL_OR_VIRUS.out.countfile.collect())
-    
-    //LOG_PROKKA(PROKKA_GFF_2_TSV.out.countfile.collect())
-    
-    // Combine every stepwise count file into one, earliest stage first. Each one already
-    // carries its own COUNT_HEADER line (from its own collectFile seed above) — strip
-    // that off per file before stacking, then let this collectFile's own seed add it back at the end.
-    CH_all_counts = CH_count_raw_reads
-        .concat(CH_count_trimmed_reads, CH_count_complex_reads, CH_count_normalized_reads,
-                CH_count_clean_reads, CH_count_raw_contigs, CH_count_trimmed_contigs,
-                CH_count_final_contigs, CH_count_sag_stats, CH_count_checkm)
-        .map { it.text.readLines().drop(1).join('\n') + '\n' }
-        .collectFile(name: 'all_stepwise_counts.csv', storeDir: "${params.output}/sample_tracking", seed: COUNT_HEADER, cache: false, sort: false)
+    PROKKA_GFF_2_TSV(PROKKA_v1_14_6.out.gff.join(CH_final_contigs))
+    CH_count_prokka = PROKKA_GFF_2_TSV.out.countfile.collectFile(name: '10_prokka_stats.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false, sort: false)
 
-    // Note, we run the viral pipeline on UNTRIMMED assemblies that have a max contig bigger than 1500.
+    // SSU (16S) recovery + CREST-style LCA classification against SILVA
+    SSU_BLAST(CH_final_contigs)
+    SSU_GET_GENE(SSU_BLAST.out.join(CH_final_contigs))
+    SSU_CLASSIFIER(SSU_BLAST.out.join(SSU_GET_GENE.out))
+    PARSE_CLASSIFIER(SSU_CLASSIFIER.out.classif)
+    CH_count_ssu = PARSE_CLASSIFIER.out.countfile.collectFile(name: '11_ssu_classification.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false, sort: false)
+
+    // GTDB-Tk taxonomy — skip assemblies below params.gtdbtk_min_bp total bases
+    GTDBTK_v2_0_0(CH_final_contigs.filter({ countBases(it[1]) > (params.gtdbtk_min_bp as int) }))
+    PARSE_GTDBTK(GTDBTK_v2_0_0.out)
+    CH_count_gtdbtk = PARSE_GTDBTK.out.collectFile(name: '12_gtdbtk_stats.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false, sort: false)
+
+    // Stepwise count files that always exist. eggNOG's cell-or-virus counts are appended
+    // below, only when --viral pulls that block in — ASSEMBLY_STATS_TABULATOR's LIST_col_order
+    // already reindexes any metric no sample produced this run to an empty column, so those
+    // 4 eggNOG columns are just optional bonus columns when --viral is off, not required ones.
+    LIST_count_channels = [CH_count_trimmed_reads, CH_count_complex_reads, CH_count_normalized_reads,
+            CH_count_clean_reads, CH_count_raw_contigs, CH_count_trimmed_contigs,
+            CH_count_final_contigs, CH_count_sag_stats, CH_count_checkm,
+            CH_count_prokka, CH_count_ssu, CH_count_gtdbtk]
+
+    // Viral classifiers (+ Alaina's eggNOG viral-vs-cellular protein predictor) run on the
+    // same fully decontaminated + trimmed assembly as the annotation steps above; geNomad is
+    // further restricted to capsules whose longest contig exceeds 1500 bp.
     if ( params.viral == true ) {
 
-        CH_FINAL_CONTIGS = TRIM_CONTIGS.out.trimmed_contigs.filter({ it[1].size()>0 })
+        PROTEINS_VS_EGGNOG_4dot5(PROKKA_v1_14_6.out.faa.filter({ it[1].size()>0 })) // ignore .faa containing no proteins
+        EGGNOG_HITS_TO_CELL_OR_VIRUS(PROTEINS_VS_EGGNOG_4dot5.out.filter({ it[1].size()>2350 })) // only keep outputs where hitsTXT file is over 13 lines long (<= 13 means no hits)
+        CH_count_cell_or_virus = EGGNOG_HITS_TO_CELL_OR_VIRUS.out.countfile.collectFile(name: '13_cell_or_virus_stats.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false, sort: false)
+        LIST_count_channels << CH_count_cell_or_virus
+
+        CH_FINAL_CONTIGS = CH_final_contigs
         GENOMAD_v1_11_1(CH_FINAL_CONTIGS.filter({ maxContigLength(it[1]) > 1500 }))
-        //PARSE_GENOMAD(GENOMAD_v1_11_1.out)
-        //LOG_GENOMAD(PARSE_GENOMAD.out.collect())
 
         // Other viral tools
-        VIRALRECALL2(CH_FINAL_CONTIGS)
         VIRSORTER_v2_2_3(CH_FINAL_CONTIGS)
         CHECKV_v1_0_1(CH_FINAL_CONTIGS)
         DEEPVIRFINDER(CH_FINAL_CONTIGS)
     }
+
+    // Combine every stepwise count file into one, earliest stage first. Each one already
+    // carries its own COUNT_HEADER line (from its own collectFile seed above) — strip
+    // that off per file before stacking, then let this collectFile's own seed add it back at the end.
+    CH_all_counts = CH_count_raw_reads
+        .concat(*LIST_count_channels)
+        .map { it.text.readLines().drop(1).join('\n') + '\n' }
+        .collectFile(name: 'all_stepwise_counts.csv', storeDir: "${params.output}/sample_tracking", seed: COUNT_HEADER, cache: false, sort: false)
+
     ASSEMBLY_STATS_TABULATOR(CH_all_counts)
 }
 
@@ -376,15 +424,13 @@ process PHENIQS_NAME_CAPSULES {
 
 process PHENIQS_DEMULTIPLEX {
     tag "${library} demultiplexing by combinatorial barcode"
-    // Retries with more memory instead of a fixed ceiling, same pattern as
-    // CONTAM_READ_FINDER/CHECKM_v1_1_9 below — but unlike those two, 4.GB isn't an
-    // empirically-observed OOM point, just a starting guess: this is the one process that
-    // reads a whole (un-subsampled) pool while writing one fastq.gz pair per capsule
-    // concurrently, so its footprint scales with both pool size and capsule count. Capped at
-    // 3 attempts (4/8/12GB) to stop at this machine's real 12GB Docker Desktop ceiling —
-    // retrying past that would just repeat the same OOM kill.
-    memory 12.GB
-    //memory { 4.GB * task.attempt }
+    // Reads a whole (un-subsampled) pool while writing one fastq.gz pair per capsule
+    // concurrently, so its footprint scales with both pool size and capsule count. On a full
+    // ~600M-pair pool with ~2500 capsules the old 12.GB / -B 64 / 1-thread config took hours
+    // (I/O-bound on tiny buffer flushes). Bumped: 24.GB + 8 threads, and params.pheniqs_buffer_capacity
+    // raised to 512 (see the note by that param) — ~2.5 GB of buffers, comfortably inside 24.
+    memory 24.GB
+    cpus 8
     maxForks 1 // keeps memory-heavy retries from stacking across libraries regardless of environment
     errorStrategy 'finish' //{ task.exitStatus in [137, 140] ? 'retry' : 'terminate' }
     maxRetries 2
@@ -627,8 +673,13 @@ process CONTAM_READ_FINDER {
     // again. Confirmed against real Atrandi capsule data: most real samples need >5GB and
     // were stuck re-running this loop on every single -resume; 10GB clears them on attempt 1.
     memory { 10.GB * task.attempt }
-    maxForks 1 // keeps memory-heavy retries from stacking across samples regardless of environment
-    errorStrategy { task.exitStatus in [137, 140] ? 'retry' : 'terminate' }
+    // maxForks 40, not 1: on a multi-thousand-capsule pool under a grid executor, maxForks 1
+    // serialized this to one bwa aln at a time (~20 s/capsule) and gated the whole downstream
+    // pipeline behind it. 40 uncaps it while staying polite on the shared queue + the fan-out
+    // reads of the ~8 GB reference. Drop it entirely / raise it if the cluster can take more.
+    maxForks 40
+    // Non-OOM failures ignore (was 'terminate' — one bwa failure then killed the whole pool run).
+    errorStrategy { task.exitStatus in [137, 140] ? 'retry' : 'ignore' }
     maxRetries 3
     container 'quay.io/biocontainers/bwa:0.7.17--h5bf99c6_8'
     input:
@@ -798,8 +849,15 @@ process CHECKM_v1_1_9 {
     // the same pattern and why. --reduced_tree's own guarantee is only "<16GB", so this
     // covers that range across two attempts rather than assuming a single number.
     memory { 6.GB * task.attempt }
-    maxForks 1 // keeps memory-heavy retries from stacking across samples regardless of environment
-    errorStrategy { task.exitStatus in [137, 140] ? 'retry' : 'terminate' }
+    // No maxForks: on a real multi-capsule pool (esp. under a grid executor) it serialized
+    // CheckM to one task at a time, which also stalled PROKKA downstream (gated on
+    // CH_translation_table from CHECKM_v1_1_9.out). At 6 GB/task the OOM-retry stacking it
+    // was guarding against isn't a concern; cap concurrency via the executor's queueSize
+    // (or a withName maxForks in a machine-specific config) if a laptop needs it.
+    // Non-OOM failures ignore (was 'terminate' — a single junk-genome CheckM failure then
+    // killed the whole pool run); that capsule just gets no completeness / no translation
+    // table, so PROKKA skips it too.
+    errorStrategy { task.exitStatus in [137, 140] ? 'retry' : 'ignore' }
     maxRetries 3
     container 'quay.io/biocontainers/checkm-genome:1.1.9--pyhdfd78af_0'
     publishDir { "${params.output}/${ID}/QC_${ID}" }, mode: params.publishmode
@@ -807,9 +865,17 @@ process CHECKM_v1_1_9 {
     output: tuple val(ID), path("checkm_${ID}")
     script:
     """
+    # Concurrent CheckM tasks on one node hit "OSError: [Errno 98] Address already in use"
+    # in mp.Manager(). The real fix is `singularity.newPidNamespace = false` in the run's
+    # nextflow.config (see that file) -- without a private PID namespace CheckM's manager
+    # process gets a unique host PID, so its abstract socket (\\0listener-<pid>-0) can't
+    # clash. This private TMPDIR is just hygiene on top (clean matplotlib cache per task).
+    mkdir -p /var/tmp/checkm_mp_${ID}_${task.attempt}
+    export TMPDIR=/var/tmp/checkm_mp_${ID}_${task.attempt}
     mkdir tmp_dir; cp ${contigs} ./tmp_dir/final_contigs_${ID}.fasta
     checkm lineage_wf --reduced_tree -f checkm_${ID}/completeness_${ID}.tsv --tab_table -q -x fasta -t ${task.cpus} tmp_dir checkm_${ID}
     rm -r tmp_dir
+    rm -rf /var/tmp/checkm_mp_${ID}_${task.attempt}
     """
     stub:
     """
@@ -847,6 +913,154 @@ process PROKKA_GFF_2_TSV{
         path("prokka_stats_${ID}.csv"), emit: countfile
     script: template "prokka_gff_2_tsv.py" }
 
+process SSU_BLAST {
+    tag "${ID}"
+    container 'quay.io/biocontainers/blast:2.11.0--pl5262h3289130_1'
+    cpus 4
+    publishDir { "${params.output}/${ID}/annotation_${ID}/ssu_recovery_${ID}" }, mode: params.publishmode
+    input: tuple val(ID), path(contigs)
+    output: tuple val(ID), path("1_silva_blast_${ID}.tsv")
+    script:
+    "blastn -task megablast -query ${contigs} -db ${params.silva_blastdb} -num_alignments 10 -outfmt 6 -num_threads ${task.cpus} -out 1_silva_blast_${ID}.tsv"
+    stub:
+    // FOR TESTING: SILVA isn't present under -stub-run; hand SSU_GET_GENE an empty hit table
+    // (a real no-hit blastn produces exactly that) so it and PARSE_CLASSIFIER still run for real.
+    "touch 1_silva_blast_${ID}.tsv" }
+
+process SSU_GET_GENE {
+    tag "${ID}"
+    // pysam ships the faidx/fetch API used below; same image CONTAM_READ_REMOVER already pins.
+    container 'quay.io/biocontainers/pysam:0.24.0--py312hf5ad864_1'
+    publishDir { "${params.output}/${ID}/annotation_${ID}/ssu_recovery_${ID}" }, mode: params.publishmode
+    input: tuple val(ID), path(ssu_hits), path(contigs)
+    output: tuple val(ID), path("1b_candidate_ssu_${ID}.fasta")
+    script:
+    """
+    #!/usr/bin/env python
+    import pysam
+    from itertools import groupby
+    BLAST6 = ["qseqid","sseqid","pident","length","mismatch","gapopen","qstart","qend","sstart","send","evalue","bitscore"]
+    pysam.faidx("${contigs}")
+    fa = pysam.FastaFile("${contigs}")
+    with open("${ssu_hits}") as fh, open("1b_candidate_ssu_${ID}.fasta", "w") as fo:
+        # input assumed sorted by query; take the best (first) hsp per query
+        for query, qgroup in groupby(fh, key=lambda x: x.partition("\\t")[0]):
+            for hsp in qgroup:
+                toks = dict(zip(BLAST6, hsp.strip().split("\\t")))
+                break
+            if not toks.get("qseqid"):
+                continue
+            start = min(int(toks["qstart"]), int(toks["qend"]))
+            end   = max(int(toks["qstart"]), int(toks["qend"]))
+            fo.write(">{}\\n{}\\n".format(toks["qseqid"], fa.fetch(toks["qseqid"], start - 1, end)))
+    """
+    stub:
+    "touch 1b_candidate_ssu_${ID}.fasta" }
+
+process SSU_CLASSIFIER {
+    tag "${ID}"
+    container 'quay.io/biocontainers/biopython:1.84'
+    // 'ignore' not 'finish' (pilot used 'finish'): on a full ~1900-capsule pool a single
+    // malformed SSU shouldn't halt everything — that capsule just gets no SSU classification.
+    errorStrategy 'ignore'
+    publishDir { "${params.output}/${ID}/annotation_${ID}/ssu_recovery_${ID}" }, mode: params.publishmode
+    input: tuple val(ID), path(ssu_hits), path(ssu)
+    output:
+        tuple val(ID), path("2_ssu_${ID}.fasta"), emit: fasta
+        tuple val(ID), path("3_classification-16s_${ID}.tsv"), emit: classif
+    script: template "ssu_classifier.py"
+    stub:
+    // FOR TESTING: needs the SILVA .map/.tree, absent under -stub-run. Empty outputs let
+    // PARSE_CLASSIFIER (not stubbed) still run and emit its three "0" rows.
+    "touch 2_ssu_${ID}.fasta 3_classification-16s_${ID}.tsv" }
+
+process PARSE_CLASSIFIER {
+    tag "${ID}"
+    container 'quay.io/biocontainers/pandas:2.2.1'
+    errorStrategy 'ignore'
+    input: tuple val(ID), path(ssu_tsv)
+    output: path("${ID}_ssu.count"), emit: countfile
+    script:
+    """
+    #!/usr/bin/env python
+    import os
+    import pandas as pd
+    SSU_1 = SSU_2 = SSU_3 = "0"
+    if os.stat("${ssu_tsv}").st_size != 0:
+        DF = pd.read_csv("${ssu_tsv}", header=None, sep="\\t")
+        SSU_1 = DF.loc[0, 1]
+        if len(DF) > 1: SSU_2 = DF.loc[1, 1]
+        if len(DF) > 2: SSU_3 = DF.loc[2, 1]
+    with open("${ID}_ssu.count", "w") as h:
+        h.write("1_SSU_classification,%s,${ID}\\n2_SSU_classification,%s,${ID}\\n3_SSU_classification,%s,${ID}\\n" % (SSU_1, SSU_2, SSU_3))
+    """ }
+
+process GTDBTK_v2_0_0 {
+    tag "${ID}"
+    container 'quay.io/biocontainers/gtdbtk:2.0.0--pyhdfd78af_1'
+    // 'ignore': a tiny/junk assembly that clears params.gtdbtk_min_bp but has no ORFs makes
+    // gtdbtk classify_wf hard-exit 1 ("no genomes to process" — Prodigal called 0 genes).
+    // That's deterministic, so retrying is pointless; that capsule just gets no GTDB row.
+    errorStrategy 'ignore'
+    // Sized for the Bigelow cluster (charlie). classify_wf's pplacer step against GTDB r207 is
+    // the memory driver; tune to your own node sizes if running elsewhere.
+    memory '128 GB'
+    cpus 8
+    publishDir { "${params.output}/${ID}/annotation_${ID}" }, mode: params.publishmode
+    input: tuple val(ID), path(contigs)
+    output: tuple val(ID), path("gtdbtk_classification_${ID}")
+    script:
+    """
+    mkdir tmp_genome_dir
+    cp ${contigs} tmp_genome_dir/final_contigs_${ID}.fasta
+    export GTDBTK_DATA_PATH=${params.gtdb}
+    gtdbtk classify_wf --genome_dir tmp_genome_dir --out_dir gtdbtk_classification_${ID} --cpus ${task.cpus} -x fasta
+    rm -r tmp_genome_dir
+    """
+    stub:
+    // FOR TESTING: the ~66GB GTDB r207 DB isn't present under -stub-run. Fake the two files
+    // PARSE_GTDBTK reads so it (not stubbed) still parses a bacterial classification.
+    """
+    mkdir -p gtdbtk_classification_${ID}/identify
+    printf 'user_genome\\tclassification\\n' > gtdbtk_classification_${ID}/gtdbtk.bac120.summary.tsv
+    printf 'final_contigs_${ID}\\td__Bacteria;p__STUB;c__;o__;f__;g__;s__\\n' >> gtdbtk_classification_${ID}/gtdbtk.bac120.summary.tsv
+    printf 'name\\tnumber_multiple_unique_genes\\n' > gtdbtk_classification_${ID}/identify/gtdbtk.bac120.markers_summary.tsv
+    printf 'final_contigs_${ID}\\t0\\n' >> gtdbtk_classification_${ID}/identify/gtdbtk.bac120.markers_summary.tsv
+    """ }
+
+process PARSE_GTDBTK {
+    tag "${ID}"
+    container 'quay.io/biocontainers/pandas:2.2.1'
+    input: tuple val(ID), path(gtdbtk_dir)
+    output: path("gtdbtk_stats_${ID}.csv")
+    script:
+    """
+    #!/usr/bin/env python
+    from os.path import exists
+    import pandas as pd
+    classification_via_GTDBTk = 0
+    multicopy_marker_genes = 0
+    TSV_bac = "${gtdbtk_dir}/gtdbtk.bac120.summary.tsv"
+    TSV_ar  = "${gtdbtk_dir}/gtdbtk.ar53.summary.tsv"
+    M_bac   = "${gtdbtk_dir}/identify/gtdbtk.bac120.markers_summary.tsv"
+    M_ar    = "${gtdbtk_dir}/identify/gtdbtk.ar53.markers_summary.tsv"
+    if exists(TSV_bac) and not exists(TSV_ar):
+        classification_via_GTDBTk = pd.read_csv(TSV_bac, sep="\\t").loc[0, "classification"]
+        if exists(M_bac):
+            multicopy_marker_genes = pd.read_csv(M_bac, sep="\\t").loc[0, "number_multiple_unique_genes"]
+    elif exists(TSV_ar) and not exists(TSV_bac):
+        classification_via_GTDBTk = pd.read_csv(TSV_ar, sep="\\t").loc[0, "classification"]
+        if exists(M_ar):
+            multicopy_marker_genes = pd.read_csv(M_ar, sep="\\t").loc[0, "number_multiple_unique_genes"]
+    elif exists(TSV_ar) and exists(TSV_bac):
+        print("warning: ambiguous whether this is archaeal or bacterial")
+    else:
+        print("warning: no GTDB-Tk classification files found")
+    with open("gtdbtk_stats_${ID}.csv", "w") as out:
+        print("classification_via_GTDBTk", classification_via_GTDBTk, "${ID}", sep=",", file=out)
+        print("multicopy_marker_genes", multicopy_marker_genes, "${ID}", sep=",", file=out)
+    """ }
+
 process ASSEMBLY_STATS_TABULATOR {
     // Only real dependencies are pandas + numpy, and numpy comes bundled with this image.
     container 'quay.io/biocontainers/pandas:2.2.1'
@@ -864,7 +1078,7 @@ process ASSEMBLY_STATS_TABULATOR {
     PATH_out = "assembly_stats.csv"
     DF_log = pd.read_csv("${COUNTS_TXT}")
 
-    LIST_col_order = ["Sample_ID", "Raw_readcount", "Trimmed_readcount", "Complexity_filtered_readcount", "Normalized_readcount", "Contam_filtered_readcount", "Raw_contig_count", "Final_clean_contig_count", "Max_contig_length", "Final_assembly_length", "GC_content", "CheckM1_est_genome_completeness"]
+    LIST_col_order = ["Sample_ID", "Raw_readcount", "Trimmed_readcount", "Complexity_filtered_readcount", "Normalized_readcount", "Contam_filtered_readcount", "Raw_contig_count", "Final_clean_contig_count", "Max_contig_length", "Final_assembly_length", "GC_content", "CheckM1_est_genome_completeness", "CDS", "tRNA", "percent_CDS_annotated", "average_CDS_length", "coding_density", "1_SSU_classification", "2_SSU_classification", "3_SSU_classification", "classification_via_GTDBTk", "multicopy_marker_genes", "Viral_besthits_(eggNOG)", "Bacterial_besthits_(eggNOG)", "Eukaryotic_besthits_(eggNOG)", "Archaeal_besthits_(eggNOG)"]
 
     print("Converting list of read/contig counts to table...")
     try:
@@ -878,9 +1092,12 @@ process ASSEMBLY_STATS_TABULATOR {
     DF_log.reset_index(inplace=True) # Make index 'Sample_ID' -> column
 
     # If no dirty reads were found (i.e. Contam_filtered_readcount says "NO_CHANGE"), make numeric by copying readcount from upstream.
-    DF_log['Contam_filtered_readcount'] = np.where(DF_log['Contam_filtered_readcount']=='NO_CHANGE',DF_log['Normalized_readcount'],DF_log['Contam_filtered_readcount']) 
+    DF_log['Contam_filtered_readcount'] = np.where(DF_log['Contam_filtered_readcount']=='NO_CHANGE',DF_log['Normalized_readcount'],DF_log['Contam_filtered_readcount'])
 
-    DF_log = DF_log[LIST_col_order] # Reorder columns to match LIST_col_order
+    # reindex (not [LIST_col_order]) so a metric that no sample produced this run — e.g. every
+    # assembly fell below params.gtdbtk_min_bp, or no SSU gene was recovered — comes through as
+    # an empty column instead of raising KeyError.
+    DF_log = DF_log.reindex(columns=LIST_col_order)
     ## Warn the user when the metrics are from a stub run, so they don't mistake them for real data.
     DF_log = DF_log.map(lambda x: "${STUB_PREFIX}" + str(x))
     DF_log.to_csv(PATH_out, index=False)
@@ -897,12 +1114,11 @@ process GENOMAD_v1_11_1 {
   output: tuple val(ID), path("geNomad_${ID}")
   script: "genomad end-to-end --cleanup --threads ${task.cpus} --full-ictv-lineage --splits 8 ${contigs} geNomad_${ID} ${params.DB_genomad_v1_11_1}" }
 
-process PROTEINS_VS_EGGNOG_5 {
-  // container='docker://quay.io/biocontainers/hmmer:3.3.2--h87f3376_2'
-  // installation notes: conda create --prefix /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/hmmer_3.4 -c conda-forge -c bioconda hmmer=3.4 pandas numpy gzip
-  beforeScript 'module load anaconda; source activate /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/hmmer_3.4'
-  conda '/mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/hmmer_3.4'
-publishDir { "${params.output}/${ID}/annotation_${ID}/eggNOG_${ID}" }, mode: params.publishmode
+process PROTEINS_VS_EGGNOG_4dot5 {
+  // Script is just hmmsearch + gzip (no Python), so the plain HMMER biocontainer covers it —
+  // the older conda env (hmmer_3.4 + pandas/numpy) is no longer needed.
+  container 'quay.io/biocontainers/hmmer:3.4--h7d74f8d_5'
+  publishDir { "${params.output}/${ID}/annotation_${ID}/eggNOG_${ID}" }, mode: params.publishmode
   errorStrategy 'ignore'
   cpus 2 // 6
   memory "50.GB"
@@ -1010,33 +1226,6 @@ process EGGNOG_HITS_TO_CELL_OR_VIRUS {
         f.writelines([LINE1, LINE2, LINE3, LINE4])
     """ }
 
-process LOG_CELL_OR_VIRUS {
-    publishDir {"${params.output}/sample_tracking/3_assemblies"}, mode: "copy"; errorStrategy 'terminate'; queue "normal"
-    input: path(countfiles)
-    output: path("10_cell_or_virus_stats.csv")
-    shell: ''' echo "Metric,Count,Sample_ID" > 10_cell_or_virus_stats.csv; for LINE in !{countfiles}; do cat ${LINE} >> 10_cell_or_virus_stats.csv; done ''' }
-
-process VIRALRECALL2 {
-  errorStrategy 'ignore'
-  beforeScript 'module load anaconda; source activate /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/viralrecall'
-  conda '/mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/viralrecall'
-  publishDir { "${params.output}/sample_tracking/3_assemblies" }, mode: "copy"
-  cpus 4
-  tag "${ID}"
-
-  input: tuple val(ID), path(fasta)
-
-  output: tuple val(ID), path("viralrecall_${ID}"), emit: output
-    path("viralrecall_${ID}/viralrecall_${ID}.summary.tsv"), emit: tsv
-
-  script:
-  """
-  cp ${fasta} ./${ID}.fasta
-  ln -s "${params.viralrecall_db}" .
-  ln -s /mnt/scgc_nfs/opt/viralrecall/acc/ .
-  python /mnt/scgc_nfs/opt/viralrecall/viralrecall.py -i ./${ID}.fasta -p "viralrecall_${ID}" -t ${task.cpus} -c
-  """ }
-
 process VIRSORTER_v2_2_3 {
   errorStrategy 'ignore'
   container 'docker://jiarong/virsorter:latest'
@@ -1107,85 +1296,3 @@ process DEEPVIRFINDER {
     echo "name\tlen\tscore\tpvalue" > ./deepvirfinder.tsv  # Make empty table
   fi
   """ }
-
-  /*
-process PARSE_GENOMAD {
-    tag "${ID}"
-    errorStrategy: "terminate"
-    container: 'brwnj/kmernorm:v1.0.0'
-    input: tuple val(ID), path(DIR_geNomad)
-    output: path("${ID}_geNomad_counts.csv")
-    script:
-    """
-    #!/usr/bin/env python
-    newline='\\n'
-    ID="${ID}"
-    PATH_out=ID+"_geNomad_counts.csv"
-
-    import pandas as pd
-    from glob import glob
-    from os.path import exists
-
-    PATH_plasmid_tsv = glob("${DIR_geNomad}/*_summary/*_plasmid_summary.tsv")[0]
-    PATH_virus_tsv = glob("${DIR_geNomad}/*_summary/*_virus_summary.tsv")[0]
-
-    NUM_virus = ''; LEN_virus = ''; NUM_plasmid = ''; LEN_plasmid = ''
-
-    if exists(PATH_virus_tsv): 
-        DF_virus = pd.read_csv(PATH_virus_tsv, sep="\t")
-        NUM_virus = len(DF_virus)
-        LEN_virus = DF_virus['length'].sum()
-    else: print("No file matching this pattern: ${DIR_geNomad}/*_summary/*_virus_summary.tsv" )
-    
-    if exists(PATH_plasmid_tsv):
-        DF_plasmid = pd.read_csv(PATH_plasmid_tsv, sep="\t")
-        NUM_plasmid = len(DF_plasmid)
-        LEN_plasmid = DF_plasmid['length'].sum()
-    else: print("No file matching this pattern: ${DIR_geNomad}/*_summary/*_plasmid_summary.tsv" )
-    
-    #  log results
-    with open(PATH_out, "w") as handle:
-        handle.write("Viral_bp_geNomad,"+str(LEN_virus)+","+ID+newline+"Viruses_geNomad,"+ str(NUM_virus) +","+ID+newline+"Plasmid_bp_geNomad,"+ str(LEN_plasmid) +","+ID+newline+'Plasmids_geNomad,' +str(NUM_plasmid)+','+ID+newline)
-    """ }
-
-/*
-process PARSE_DEEPVIRFINDER_AND_VIRSORTER {
-  errorStrategy 'ignore'
-  container 'brwnj/kmernorm:v1.0.0'
-  cpus 1
-  tag "${ID}"
-
-  input: tuple val(ID), path(virsorter_TSV), path(deepvirfinder_TSV), path(fasta)
-  output: tuple val(ID), path("bait_${ID}.fasta"), emit: fasta
-  output: path("1_${ID}.log"), emit: log
-
-  """
-  #!/usr/bin/env python
-  import pandas as pd; import shutil
-
-  tab = "\\t"; newline = "\\n"
-  PASS = False
-
-  # Check virsorter results
-  MAXvirsorter = pd.read_csv("${virsorter_TSV}",sep=tab)['max_score'].max()
-  if MAXvirsorter > ${Virus_MINscore}: PASS = True
-
-  # Check deepvirfinder results
-  DF = pd.read_csv("${deepvirfinder_TSV}",sep=tab)
-  DF_sig = DF.loc[DF['pvalue'] < ${Virus_MAXpvalue}]
-  if len(DF_sig) > 0:
-    MAXdeepvirfinder = DF_sig['score'].max()
-    if len(DF_sig) > 0: PASS = True
-  else: MAXdeepvirfinder = 'NA'
-
-  if PASS == True:
-    print("passed")
-    shutil.copy("${fasta}", "bait_${ID}.fasta") # copy SAG to move forward with analysis
-  else:
-    print("Fail. No contigs had scores over ","${Virus_MINscore}"," and/or pvalues under ","${Virus_MAXpvalue}")
-
-  # log results
-  with open("1_${ID}.log", "w") as handle:
-    handle.write("Bait,"+str(PASS)+",${ID}"+newline+"Maxdeepvirfinder,"+ str(MAXdeepvirfinder) +",${ID}"+newline+"MAXvirsorter,"+ str(MAXvirsorter) +",${ID}"+newline)
-  """ }
-*/
