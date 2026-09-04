@@ -668,8 +668,13 @@ process CONTAM_READ_FINDER {
     // again. Confirmed against real Atrandi capsule data: most real samples need >5GB and
     // were stuck re-running this loop on every single -resume; 10GB clears them on attempt 1.
     memory { 10.GB * task.attempt }
-    maxForks 1 // keeps memory-heavy retries from stacking across samples regardless of environment
-    errorStrategy { task.exitStatus in [137, 140] ? 'retry' : 'terminate' }
+    // maxForks 40, not 1: on a multi-thousand-capsule pool under a grid executor, maxForks 1
+    // serialized this to one bwa aln at a time (~20 s/capsule) and gated the whole downstream
+    // pipeline behind it. 40 uncaps it while staying polite on the shared queue + the fan-out
+    // reads of the ~8 GB reference. Drop it entirely / raise it if the cluster can take more.
+    maxForks 40
+    // Non-OOM failures ignore (was 'terminate' — one bwa failure then killed the whole pool run).
+    errorStrategy { task.exitStatus in [137, 140] ? 'retry' : 'ignore' }
     maxRetries 3
     container 'quay.io/biocontainers/bwa:0.7.17--h5bf99c6_8'
     input:
