@@ -300,37 +300,42 @@ workflow {
     PARSE_GTDBTK(GTDBTK_v2_0_0.out)
     CH_count_gtdbtk = PARSE_GTDBTK.out.collectFile(name: '12_gtdbtk_stats.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false, sort: false)
 
-    // Alaina's viral vs. cellular predictor
-    PROTEINS_VS_EGGNOG_5(PROKKA_v1_14_6.out.faa.filter({ it[1].size()>0 })) // ignore .faa containing no proteins
-    EGGNOG_HITS_TO_CELL_OR_VIRUS(PROTEINS_VS_EGGNOG_5.out.filter({ it[1].size()>2350 })) // only keep outputs where hitsTXT file is over 13 lines long (<= 13 means no hits)
-    CH_count_cell_or_virus = EGGNOG_HITS_TO_CELL_OR_VIRUS.out.countfile.collectFile(name: '13_cell_or_virus_stats.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false, sort: false)
+    // Stepwise count files that always exist. eggNOG's cell-or-virus counts are appended
+    // below, only when --viral pulls that block in — ASSEMBLY_STATS_TABULATOR's LIST_col_order
+    // already reindexes any metric no sample produced this run to an empty column, so those
+    // 4 eggNOG columns are just optional bonus columns when --viral is off, not required ones.
+    LIST_count_channels = [CH_count_trimmed_reads, CH_count_complex_reads, CH_count_normalized_reads,
+            CH_count_clean_reads, CH_count_raw_contigs, CH_count_trimmed_contigs,
+            CH_count_final_contigs, CH_count_sag_stats, CH_count_checkm,
+            CH_count_prokka, CH_count_ssu, CH_count_gtdbtk]
 
-    // Combine every stepwise count file into one, earliest stage first. Each one already
-    // carries its own COUNT_HEADER line (from its own collectFile seed above) — strip
-    // that off per file before stacking, then let this collectFile's own seed add it back at the end.
-    CH_all_counts = CH_count_raw_reads
-        .concat(CH_count_trimmed_reads, CH_count_complex_reads, CH_count_normalized_reads,
-                CH_count_clean_reads, CH_count_raw_contigs, CH_count_trimmed_contigs,
-                CH_count_final_contigs, CH_count_sag_stats, CH_count_checkm,
-                CH_count_prokka, CH_count_ssu, CH_count_gtdbtk, CH_count_cell_or_virus)
-        .map { it.text.readLines().drop(1).join('\n') + '\n' }
-        .collectFile(name: 'all_stepwise_counts.csv', storeDir: "${params.output}/sample_tracking", seed: COUNT_HEADER, cache: false, sort: false)
-
-    // Viral classifiers run on the same fully decontaminated + trimmed assembly as the
-    // annotation steps above; geNomad is further restricted to capsules whose longest contig
-    // exceeds 1500 bp.
+    // Viral classifiers (+ Alaina's eggNOG viral-vs-cellular protein predictor) run on the
+    // same fully decontaminated + trimmed assembly as the annotation steps above; geNomad is
+    // further restricted to capsules whose longest contig exceeds 1500 bp.
     if ( params.viral == true ) {
+
+        PROTEINS_VS_EGGNOG_4dot5(PROKKA_v1_14_6.out.faa.filter({ it[1].size()>0 })) // ignore .faa containing no proteins
+        EGGNOG_HITS_TO_CELL_OR_VIRUS(PROTEINS_VS_EGGNOG_4dot5.out.filter({ it[1].size()>2350 })) // only keep outputs where hitsTXT file is over 13 lines long (<= 13 means no hits)
+        CH_count_cell_or_virus = EGGNOG_HITS_TO_CELL_OR_VIRUS.out.countfile.collectFile(name: '13_cell_or_virus_stats.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false, sort: false)
+        LIST_count_channels << CH_count_cell_or_virus
 
         CH_FINAL_CONTIGS = CH_final_contigs
         GENOMAD_v1_11_1(CH_FINAL_CONTIGS.filter({ maxContigLength(it[1]) > 1500 }))
-        //PARSE_GENOMAD(GENOMAD_v1_11_1.out)
-        //LOG_GENOMAD(PARSE_GENOMAD.out.collect())
 
         // Other viral tools
         VIRSORTER_v2_2_3(CH_FINAL_CONTIGS)
         CHECKV_v1_0_1(CH_FINAL_CONTIGS)
         DEEPVIRFINDER(CH_FINAL_CONTIGS)
     }
+
+    // Combine every stepwise count file into one, earliest stage first. Each one already
+    // carries its own COUNT_HEADER line (from its own collectFile seed above) — strip
+    // that off per file before stacking, then let this collectFile's own seed add it back at the end.
+    CH_all_counts = CH_count_raw_reads
+        .concat(*LIST_count_channels)
+        .map { it.text.readLines().drop(1).join('\n') + '\n' }
+        .collectFile(name: 'all_stepwise_counts.csv', storeDir: "${params.output}/sample_tracking", seed: COUNT_HEADER, cache: false, sort: false)
+
     ASSEMBLY_STATS_TABULATOR(CH_all_counts)
 }
 
@@ -1109,7 +1114,7 @@ process GENOMAD_v1_11_1 {
   output: tuple val(ID), path("geNomad_${ID}")
   script: "genomad end-to-end --cleanup --threads ${task.cpus} --full-ictv-lineage --splits 8 ${contigs} geNomad_${ID} ${params.DB_genomad_v1_11_1}" }
 
-process PROTEINS_VS_EGGNOG_5 {
+process PROTEINS_VS_EGGNOG_4dot5 {
   // Script is just hmmsearch + gzip (no Python), so the plain HMMER biocontainer covers it —
   // the older conda env (hmmer_3.4 + pandas/numpy) is no longer needed.
   container 'quay.io/biocontainers/hmmer:3.4--h7d74f8d_5'
@@ -1291,85 +1296,3 @@ process DEEPVIRFINDER {
     echo "name\tlen\tscore\tpvalue" > ./deepvirfinder.tsv  # Make empty table
   fi
   """ }
-
-  /*
-process PARSE_GENOMAD {
-    tag "${ID}"
-    errorStrategy: "terminate"
-    container: 'brwnj/kmernorm:v1.0.0'
-    input: tuple val(ID), path(DIR_geNomad)
-    output: path("${ID}_geNomad_counts.csv")
-    script:
-    """
-    #!/usr/bin/env python
-    newline='\\n'
-    ID="${ID}"
-    PATH_out=ID+"_geNomad_counts.csv"
-
-    import pandas as pd
-    from glob import glob
-    from os.path import exists
-
-    PATH_plasmid_tsv = glob("${DIR_geNomad}/*_summary/*_plasmid_summary.tsv")[0]
-    PATH_virus_tsv = glob("${DIR_geNomad}/*_summary/*_virus_summary.tsv")[0]
-
-    NUM_virus = ''; LEN_virus = ''; NUM_plasmid = ''; LEN_plasmid = ''
-
-    if exists(PATH_virus_tsv): 
-        DF_virus = pd.read_csv(PATH_virus_tsv, sep="\t")
-        NUM_virus = len(DF_virus)
-        LEN_virus = DF_virus['length'].sum()
-    else: print("No file matching this pattern: ${DIR_geNomad}/*_summary/*_virus_summary.tsv" )
-    
-    if exists(PATH_plasmid_tsv):
-        DF_plasmid = pd.read_csv(PATH_plasmid_tsv, sep="\t")
-        NUM_plasmid = len(DF_plasmid)
-        LEN_plasmid = DF_plasmid['length'].sum()
-    else: print("No file matching this pattern: ${DIR_geNomad}/*_summary/*_plasmid_summary.tsv" )
-    
-    #  log results
-    with open(PATH_out, "w") as handle:
-        handle.write("Viral_bp_geNomad,"+str(LEN_virus)+","+ID+newline+"Viruses_geNomad,"+ str(NUM_virus) +","+ID+newline+"Plasmid_bp_geNomad,"+ str(LEN_plasmid) +","+ID+newline+'Plasmids_geNomad,' +str(NUM_plasmid)+','+ID+newline)
-    """ }
-
-/*
-process PARSE_DEEPVIRFINDER_AND_VIRSORTER {
-  errorStrategy 'ignore'
-  container 'brwnj/kmernorm:v1.0.0'
-  cpus 1
-  tag "${ID}"
-
-  input: tuple val(ID), path(virsorter_TSV), path(deepvirfinder_TSV), path(fasta)
-  output: tuple val(ID), path("bait_${ID}.fasta"), emit: fasta
-  output: path("1_${ID}.log"), emit: log
-
-  """
-  #!/usr/bin/env python
-  import pandas as pd; import shutil
-
-  tab = "\\t"; newline = "\\n"
-  PASS = False
-
-  # Check virsorter results
-  MAXvirsorter = pd.read_csv("${virsorter_TSV}",sep=tab)['max_score'].max()
-  if MAXvirsorter > ${Virus_MINscore}: PASS = True
-
-  # Check deepvirfinder results
-  DF = pd.read_csv("${deepvirfinder_TSV}",sep=tab)
-  DF_sig = DF.loc[DF['pvalue'] < ${Virus_MAXpvalue}]
-  if len(DF_sig) > 0:
-    MAXdeepvirfinder = DF_sig['score'].max()
-    if len(DF_sig) > 0: PASS = True
-  else: MAXdeepvirfinder = 'NA'
-
-  if PASS == True:
-    print("passed")
-    shutil.copy("${fasta}", "bait_${ID}.fasta") # copy SAG to move forward with analysis
-  else:
-    print("Fail. No contigs had scores over ","${Virus_MINscore}"," and/or pvalues under ","${Virus_MAXpvalue}")
-
-  # log results
-  with open("1_${ID}.log", "w") as handle:
-    handle.write("Bait,"+str(PASS)+",${ID}"+newline+"Maxdeepvirfinder,"+ str(MAXdeepvirfinder) +",${ID}"+newline+"MAXvirsorter,"+ str(MAXvirsorter) +",${ID}"+newline)
-  """ }
-*/

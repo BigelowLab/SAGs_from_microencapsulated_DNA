@@ -2,7 +2,7 @@
 
 ![Pipeline smoke test](https://github.com/BigelowLab/GORG-Dark-SAG-assembly/actions/workflows/stub-run.yml/badge.svg)
 
-A Nextflow pipeline that takes paired-end Illumina reads from Atrandi combinatorial-barcoded single-amplified genome (SAG) libraries through to decontaminated, annotated assemblies: Atrandi demultiplexing → quality control → trimming → complexity filtering → k-mer normalization → host/contaminant read removal → assembly → contig trimming/deduplication → host/contaminant contig removal → genome completeness estimation → Prokka annotation → SSU (16S) recovery + classification → GTDB-Tk taxonomy → eggNOG-based viral/cellular protein classification → a single per-sample stats table.
+A Nextflow pipeline that takes paired-end Illumina reads from Atrandi combinatorial-barcoded single-amplified genome (SAG) libraries through to decontaminated, annotated assemblies: Atrandi demultiplexing → quality control → trimming → complexity filtering → k-mer normalization → host/contaminant read removal → assembly → contig trimming/deduplication → host/contaminant contig removal → genome completeness estimation → Prokka annotation → SSU (16S) recovery + classification → GTDB-Tk taxonomy → (optionally) viral classification, including eggNOG-based viral/cellular protein classification → a single per-sample stats table.
 
 This is the archival pipeline for the paper *"Single-particle genomics uncovers abundant non-canonical marine viruses from nanolitre volumes."*
 
@@ -18,7 +18,7 @@ Beyond the contaminant reference (auto-downloaded on first run, below), full fun
 | **UniProt Swiss-Prot** (`--prokka`) | ❌<br>user must install | Yes | Prokka functional annotation | [uniprot.org](https://www.uniprot.org/downloads) | release 2017 | 134 MB, 273,877 sequences | The UniProt Consortium, *NAR* — [10.1093/nar/gkac1052](https://doi.org/10.1093/nar/gkac1052) |
 | **SILVA rRNA DB (silvamod)** + CREST `.map`/`.tree` (`--silva_blastdb`/`_map`/`_tree`) | ❌<br>user must install | Yes | Classification (single-gene) | [arb-silva.de](https://www.arb-silva.de/) | SILVA release 128 | 780 MB fasta + ~250 MB BLAST index, 11.2 MB map, 123 KB tree | Quast et al. 2013, *NAR* — [10.1093/nar/gks1219](https://doi.org/10.1093/nar/gks1219); Lanzén et al. 2012, *PLOS ONE* — CREST |
 | **GTDB-Tk reference data** (`--gtdb`) | ❌<br>user must install | Yes | Classification (marker genes: GTDB) | [GTDB-Tk data downloads](https://ecogenomics.github.io/GTDBTk/installing/index.html#gtdb-tk-reference-data) | Release 207 | ~66 GB (published size; not independently re-measured) | Parks et al. 2020, *Nat. Biotechnol.* — [10.1038/s41587-020-0501-8](https://doi.org/10.1038/s41587-020-0501-8); Chaumeil et al. 2022, *Bioinformatics* — [10.1093/bioinformatics/btac672](https://doi.org/10.1093/bioinformatics/btac672) |
-| **eggNOG HMM database** + annotation table (`--PATH_hmm`/`--PATH_annot`) | ❌<br>user must install | Yes | Classification (marker proteins: viral/euk/bact/arch) | [eggnog.embl.de](http://eggnog.embl.de) | eggNOG 4.5 | 50.5 GB (`nog.hmm`) + 14 MB annotation TSV (locally modified) | Huerta-Cepas et al. 2016, *NAR* — [10.1093/nar/gkv1248](https://doi.org/10.1093/nar/gkv1248) |
+| **eggNOG HMM database** + annotation table (`--PATH_hmm`/`--PATH_annot`, `--viral` only) | ❌<br>user must install | only for `--viral` mode | Classification (marker proteins: viral/euk/bact/arch) | [eggnog.embl.de](http://eggnog.embl.de) | eggNOG 4.5 | 50.5 GB (`nog.hmm`) + 14 MB annotation TSV (locally modified) | Huerta-Cepas et al. 2016, *NAR* — [10.1093/nar/gkv1248](https://doi.org/10.1093/nar/gkv1248) |
 | **geNomad database** (`--DB_genomad_v1_11_1`, `--viral` only) | ❌<br>user must install | only for `--viral` mode | Viral/plasmid annotation | [github.com/apcamargo/genomad](https://github.com/apcamargo/genomad) | Compatible with geNomad 1.11.1 | ~1.4 GB | Camargo et al. 2023, *Nat. Biotechnol.* — [10.1038/s41587-023-01953-y](https://doi.org/10.1038/s41587-023-01953-y) |
 | **VirSorter2 database** (hardcoded path, `--viral` only) | ❌<br>user must install | only for `--viral` mode | Viral annotation | [OSF v46sc](https://osf.io/v46sc/) | Downloaded Feb 2021 | ~10 GB | Guo et al. 2021, *Microbiome* — [10.1186/s40168-020-00990-y](https://doi.org/10.1186/s40168-020-00990-y) |
 | **CheckV database** (hardcoded path, `--viral` only) | ❌<br>user must install | only for `--viral` mode | Viral annotation | [bitbucket.org/berkeleylab/checkv](https://bitbucket.org/berkeleylab/checkv/) | checkv-db-v1.0 (schema v0.6, May 6 2020) | 5.5 GB (3.3 GB genome_db + 2.2 GB hmm_db) | Nayfach et al. 2021, *Nat. Biotechnol.* — [10.1038/s41587-020-00774-7](https://doi.org/10.1038/s41587-020-00774-7) |
@@ -104,7 +104,7 @@ Each pair is an **Atrandi combinatorial-barcode pool**, not a single SAG — man
 | `--silva_blastdb` / `--silva_map` / `--silva_tree` | (cluster paths) | SILVA rRNA BLAST database + CREST `.map`/`.tree` for SSU classification — **you must supply these** (see [Reference data](#reference-data)) |
 | `--gtdb` | (cluster path) | GTDB-Tk reference data directory (**GTDB r207**, the release GTDB-Tk 2.0.0 expects) — **you must supply this** |
 | `--gtdbtk_min_bp` | `2500` | Skip GTDB-Tk on assemblies smaller than this (total bases) |
-| `--PATH_hmm` / `--PATH_annot` | (cluster paths) | eggNOG HMM database + its annotation table, for `hmmsearch`-based viral/cellular protein classification — **you must supply these** (see [Reference data](#reference-data)) |
+| `--PATH_hmm` / `--PATH_annot` | (cluster paths) | eggNOG HMM database + its annotation table, for `hmmsearch`-based viral/cellular protein classification — needed only when `--viral` is on; **you must supply these** if so (see [Reference data](#reference-data)) |
 
 ## Pipeline stages
 
@@ -119,8 +119,7 @@ Each pair is an **Atrandi combinatorial-barcode pool**, not a single SAG — man
 8. **Annotation** — Prokka (`--proteins` SwissProt), with a comprehensive per-CDS TSV and CDS/tRNA/coding-density stats
 9. **SSU recovery + classification** — megablast the assembly against SILVA, pull the best SSU (16S) region out of the hit contig, then CREST-style lowest-common-ancestor classification against the SILVA tree (top 3 recovered SSUs recorded)
 10. **GTDB-Tk taxonomy** — `gtdbtk classify_wf` (v2.0.0 / GTDB r207), on assemblies ≥ `--gtdbtk_min_bp`; records the classification and the multi-copy marker-gene count
-11. **eggNOG protein classification** — `hmmsearch` each capsule's Prokka-predicted proteins against a user-supplied eggNOG HMM database; the best hit's domain (Virus/Bacteria/Eukarya/Archaea) is tallied per capsule. Always runs (not gated by `--viral`)
-12. **Viral classification** — geNomad, VirSorter2, CheckV, DeepVirFinder (gated by `--viral`, default on)
+11. **Viral classification** (gated by `--viral`, default on) — geNomad, VirSorter2, CheckV, DeepVirFinder, plus eggNOG protein classification: `hmmsearch` each capsule's Prokka-predicted proteins against a user-supplied eggNOG HMM database, tallying the best hit's domain (Virus/Bacteria/Eukarya/Archaea) per capsule
 
 Each stage's per-sample counts land in `results/sample_tracking/stepwise_counts/`, and everything gets combined into one final `results/assembly_stats.csv` — one row per sample.
 
@@ -135,7 +134,7 @@ That download (fasta + prebuilt BWA index) is a one-time cost of a few GB; a mat
 
 ### Annotation / classification databases (not auto-downloaded)
 
-Unlike the contaminant reference, these are **not** fetched by the pipeline — download them yourself and point the matching params at them. They are only needed by the annotation/classification stages (8–11); the pipeline runs without them if you stop at stage 7, and `-stub-run` does not need them at all.
+Unlike the contaminant reference, these are **not** fetched by the pipeline — download them yourself and point the matching params at them. `--prokka`, `--silva_*`, and `--gtdb` are needed by the annotation/classification stages (8–10); `--PATH_hmm`/`--PATH_annot` are needed only when `--viral` is on (stage 11). The pipeline runs without any of them if you stop at stage 7, and `-stub-run` does not need them at all.
 
 | Param(s) | What | Source |
 |---|---|---|
