@@ -15,14 +15,14 @@ must be preserved and included in the distributed image/artifact.
 **Several entries below need attention before any redistribution or commercial
 use of this pipeline's containers or results — see the bolded license column
 and the "Summary of obligations" at the end.** In particular: **geNomad** and
-**DeepVirFinder** restrict *use* to academic / non-commercial contexts;
-**Pheniqs**'s repository license conflicts with its source-file headers, so
-(like **KMERNORM** and the **eggNOG database**, which could not be
-license-verified at all) this pipeline does not bundle or reference any
-container for it — installing and running it is left entirely to the user, at
-their own discretion and risk (see `README.md` "Installing Pheniqs"). Several
-remaining images (`jiarong/virsorter:latest`, `replikation/deepvirfinder:latest`)
-use unpinned `:latest`-style tags and are not reproducible by version.
+**DeepVirFinder** restrict *use* to academic / non-commercial contexts — this
+is why `--viral` (the block containing both) now defaults to `false`; only set
+it `true` if your use qualifies. **Pheniqs**'s repository license conflicts
+with its source-file headers, so (like **KMERNORM** and the **eggNOG
+database**, which could not be license-verified at all) this pipeline does not
+bundle or reference any container for it — installing and running it is left
+entirely to the user, at their own discretion and risk (see `README.md`
+"Installing Pheniqs").
 
 Versions are taken from each process's `container` tag in `main.nf` (some also
 encoded in the process name). Reference *databases* (the contaminant reference,
@@ -79,9 +79,9 @@ by this pipeline — their own terms still apply and are noted where relevant.
 | Tool | Version | License | Notes |
 |---|---|---|---|
 | [geNomad](https://github.com/apcamargo/genomad) | 1.11.1 | **Berkeley Lab Academic / Non-Commercial License** | `GENOMAD_v1_11_1` (`end-to-end`). **Restricts *use* itself** — academic, internal research & development, non-commercial only; commercial rights reserved by Lawrence Berkeley National Laboratory. Confirm eligibility before any commercial use of this pipeline or its results. `params.DB_genomad_v1_11_1` is a user-supplied prebuilt database. |
-| [VirSorter2](https://github.com/jiarong/VirSorter2) (`docker://jiarong/virsorter:latest`) | unpinned (name implies 2.2.3) | GPL-2.0-or-later | `VIRSORTER_v2_2_3` calls `virsorter run` — the VirSorter2 CLI, not the original VirSorter (`simroux/VirSorter`, a different codebase). The `:latest` tag is **not** version-pinned, so the exact build isn't guaranteed reproducible — verify the running version if that matters. |
+| [VirSorter2](https://github.com/jiarong/VirSorter2) (`docker://jiarong/virsorter:2.2.3`) | 2.2.3 | GPL-2.0-or-later | `VIRSORTER_v2_2_3` calls `virsorter run` — the VirSorter2 CLI, not the original VirSorter (`simroux/VirSorter`, a different codebase). Pinned to the `2.2.3` tag (was `:latest`); confirmed identical content to `:latest` via `virsorter --version` (2026-09-04) — `:latest` hasn't moved since both were published together on 2021-12-27, but `:2.2.3` is immutable going forward. |
 | [CheckV](https://bitbucket.org/berkeleylab/checkv/) | 1.0.1 | BSD-3-Clause-LBNL | `CHECKV_v1_0_1` (`end_to_end`). Modified-BSD variant used by Lawrence Berkeley National Laboratory. `params`-referenced CheckV DB is user-supplied. |
-| [DeepVirFinder](https://github.com/jessieren/DeepVirFinder) | unpinned (`replikation/deepvirfinder:latest`) | **USC-RL v1.0 — academic / non-commercial only** | `DEEPVIRFINDER` (`dvf.py`). Commercial use requires a separate paid license from the University of Southern California. Upstream ships no official container and has no numbered releases since ~2019, so the version cannot be pinned; this pipeline uses `replikation/deepvirfinder:latest`, a community image whose Dockerfile traces to the peer-reviewed "What the Phage" pipeline (`replikation/What_the_Phage`). |
+| [DeepVirFinder](https://github.com/jessieren/DeepVirFinder) | pinned by digest (`replikation/deepvirfinder@sha256:cc9666...`) | **USC-RL v1.0 — academic / non-commercial only** | `DEEPVIRFINDER` (`dvf.py`). Commercial use requires a separate paid license from the University of Southern California. Upstream ships no official container and has no numbered releases since ~2019 (the image content traces to upstream commit `475d883`, 2019-01-04). `replikation/deepvirfinder` has only ever published one tag (`:latest`, since 2019-05-13), so this pipeline pins its actual content digest instead of the mutable tag name — immutable even if that tag is ever reused. Image Dockerfile traces to the peer-reviewed "What the Phage" pipeline (`replikation/What_the_Phage`). |
 | [HMMER](https://github.com/EddyRivasLab/hmmer) | 3.4 | BSD-3-Clause | `PROTEINS_VS_EGGNOG_4dot5` (`hmmsearch -E 0.00001` of each capsule's Prokka-predicted proteins against a user-supplied eggNOG HMM database). Distinct from the HMMER 3.3.2 that Prokka bundles internally, above. |
 | eggNOG HMM database + annotation table | eggNOG 4.5 (locally modified `nog_annotation_virupdated.tsv`) | **Unverified** | `params.PATH_hmm` / `params.PATH_annot`, consumed by `PROTEINS_VS_EGGNOG_4dot5` / `EGGNOG_HITS_TO_CELL_OR_VIRUS`. eggNOG's publications are CC BY, but no explicit reuse license has been identified for the redistributable database files themselves, and the annotation TSV here has been locally edited ("virupdated"). User-supplied, not redistributed by this pipeline — confirm terms with the [eggNOG project](http://eggnog.embl.de) before redistributing results derived from it at scale. |
 
@@ -101,7 +101,8 @@ by this pipeline — their own terms still apply and are noted where relevant.
   more than redistribution: they restrict *use* itself to academic /
   non-commercial contexts. Confirm eligibility before running this pipeline, or
   distributing its results, in any commercial setting. (Both are in the
-  `--viral` block, which is on by default — set `--viral false` to skip them.)
+  `--viral` block, which now **defaults to `false`** — only set `--viral true`
+  if your use qualifies.)
 - **Pheniqs** carries a repository `LICENSE` (restrictive NYU research license)
   that conflicts with its per-file AGPL-3.0-or-later headers, so this pipeline
   does not bundle or reference any Pheniqs container — downloading, installing,
@@ -109,9 +110,7 @@ by this pipeline — their own terms still apply and are noted where relevant.
   treatment as KMERNORM, below).
 - **KMERNORM (as actually installed here)** could not be license-verified as of
   this writing — treat its use as at the user's own discretion and risk until
-  independently confirmed. Unpinned `:latest`-style container tags
-  (`jiarong/virsorter`, `replikation/deepvirfinder`) also mean those steps are
-  not reproducible by version.
+  independently confirmed.
 - The **eggNOG HMM database / annotation table** (`params.PATH_hmm`,
   `params.PATH_annot`) is likewise unverified for reuse terms — eggNOG's
   publications are CC BY, but no explicit license covers the raw database

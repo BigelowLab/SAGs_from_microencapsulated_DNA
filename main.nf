@@ -24,7 +24,11 @@ params.output ="./results/"
 // MODES
 params.dev = false
 params.dev_num_capsules = 10 // how many capsules --dev carries into assembly
-params.viral = true
+// Defaults OFF: two of the four tools in this block (geNomad, DeepVirFinder) restrict *use*
+// itself to academic / internal non-commercial research & development, not just
+// redistribution -- see THIRD_PARTY_LICENSES.md. Only set --viral true if your use of this
+// pipeline and its results qualifies.
+params.viral = false
 params.target_IDs = "" // comma-separated capsule IDs to restrict downstream processing to (e.g. "4_AACCGGTT,7_TTGGCCAA"); empty runs every capsule
 
 // Defaults
@@ -1244,7 +1248,10 @@ process EGGNOG_HITS_TO_CELL_OR_VIRUS {
 
 process VIRSORTER_v2_2_3 {
   errorStrategy 'ignore'
-  container 'docker://jiarong/virsorter:latest'
+  // Pinned (was :latest): jiarong/virsorter:2.2.3 was published alongside :latest on
+  // 2021-12-27 and :latest hasn't moved since (confirmed identical `virsorter --version`
+  // output from both, 2026-09-04) — :2.2.3 gives the exact same image with an immutable tag.
+  container 'docker://jiarong/virsorter:2.2.3'
   publishDir { "${params.output}/${ID}/annotation_${ID}" }, mode: "copy"
 //memory='50.GB'
   cpus 6
@@ -1288,7 +1295,11 @@ process DEEPVIRFINDER {
   // replikation/What_the_Phage (the peer-reviewed "What the Phage" pipeline) — verified by
   // pulling it and running `dvf.py --help` before adopting it. Its bundled models live at
   // /DeepVirFinder/models, not the tool's own default ./models, hence -m below.
-  container 'replikation/deepvirfinder:latest'
+  // Pinned (was :latest): replikation/deepvirfinder has only ever published this one tag
+  // (since 2019-05-13, per Docker Hub); pinning the tag's actual content digest (confirmed
+  // against the cached image, 2026-09-04) makes it immutable even if that tag is ever
+  // reused/overwritten later.
+  container 'replikation/deepvirfinder@sha256:cc9666dd53d249e9f47bb8723fd7e7918168de126ad2fdaa3136db4b84dec46d'
   publishDir { "${params.output}/${ID}/annotation_${ID}/deepvirfinder_${ID}" }, mode: "copy"
   cpus 2
   tag "${ID}"

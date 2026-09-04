@@ -104,6 +104,16 @@ Each pair is an **Atrandi combinatorial-barcode pool**, not a single SAG — man
 | `--gtdb` | (cluster path) | GTDB-Tk reference data directory (**GTDB r207**, the release GTDB-Tk 2.0.0 expects) — **you must supply this** |
 | `--gtdbtk_min_bp` | `2500` | Skip GTDB-Tk on assemblies smaller than this (total bases) |
 | `--PATH_hmm` / `--PATH_annot` | (cluster paths) | eggNOG HMM database + its annotation table, for `hmmsearch`-based viral/cellular protein classification — needed only when `--viral` is on; **you must supply these** if so (see [Reference data](#reference-data)) |
+| `--viral` | `false` | Turns on the viral classification stage (geNomad, VirSorter2, CheckV, DeepVirFinder, eggNOG). **Only set this to `true` for academic / non-commercial use** — see the warning below. |
+
+> **⚠️ `--viral true` is restricted to academic and non-commercial use.** Two of
+> the four tools in that stage carry licenses that restrict *use itself*, not
+> just redistribution: **geNomad** (Berkeley Lab Academic / Non-Commercial
+> License — internal research & development, non-commercial only) and
+> **DeepVirFinder** (USC-RL v1.0 — commercial use requires a separate paid
+> license from the University of Southern California). Confirm your use
+> qualifies before turning this on; see `THIRD_PARTY_LICENSES.md` for details.
+> This is why `--viral` now defaults to `false`.
 
 ## Pipeline stages
 
@@ -118,7 +128,7 @@ Each pair is an **Atrandi combinatorial-barcode pool**, not a single SAG — man
 8. **Annotation** — Prokka (`--proteins` SwissProt), with a comprehensive per-CDS TSV and CDS/tRNA/coding-density stats
 9. **SSU recovery + classification** — megablast the assembly against SILVA, pull the best SSU (16S) region out of the hit contig, then CREST-style lowest-common-ancestor classification against the SILVA tree (top 3 recovered SSUs recorded)
 10. **GTDB-Tk taxonomy** — `gtdbtk classify_wf` (v2.0.0 / GTDB r207), on assemblies ≥ `--gtdbtk_min_bp`; records the classification and the multi-copy marker-gene count
-11. **Viral classification** (gated by `--viral`, default on) — geNomad, VirSorter2, CheckV, DeepVirFinder, plus eggNOG protein classification: `hmmsearch` each capsule's Prokka-predicted proteins against a user-supplied eggNOG HMM database, tallying the best hit's domain (Virus/Bacteria/Eukarya/Archaea) per capsule
+11. **Viral classification** (gated by `--viral`, **default off — academic / non-commercial use only**, see the warning above) — geNomad, VirSorter2, CheckV, DeepVirFinder, plus eggNOG protein classification: `hmmsearch` each capsule's Prokka-predicted proteins against a user-supplied eggNOG HMM database, tallying the best hit's domain (Virus/Bacteria/Eukarya/Archaea) per capsule
 
 Each stage's per-sample counts land in `results/sample_tracking/stepwise_counts/`, and everything gets combined into one final `results/assembly_stats.csv` — one row per sample.
 
