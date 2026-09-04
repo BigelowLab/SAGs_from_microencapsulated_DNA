@@ -544,8 +544,14 @@ process COMPLEXITY_FILTER {
 
 process KMERNORM_v1_0_0 {
     tag "${ID}"
-    // Installing and providing `kmernorm` (or other normalization software) on PATH is the user's own responsibility
-    container 'brwnj/kmernorm:v1.0.0'
+    // kmernorm (Mingkun Li) has no published license (SourceForge page or source archive) —
+    // effectively all-rights-reserved by default copyright — and brwnj/kmernorm:v1.0.0 has no
+    // published Dockerfile/build provenance either, so this pipeline does not bundle or
+    // reference either. Installing kmernorm (or equivalent) on PATH, and pointing your own
+    // nextflow.config at it (e.g. a per-process `module`/`beforeScript`), is the user's own
+    // responsibility — entirely at your discretion; this pipeline doesn't warrant or vouch for
+    // it. See THIRD_PARTY_LICENSES.md / TODO.md.
+    container null
     publishDir { "${params.output}/${ID}/reads_${ID}"}, pattern: "normalized_pe_*.fastq.gz", mode: params.publishmode
     publishDir { "${params.output}/sample_tracking" }, pattern: "*count", mode: params.publishmode
     input: tuple val(ID), path(paired)
