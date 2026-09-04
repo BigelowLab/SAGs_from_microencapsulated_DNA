@@ -6,8 +6,6 @@ A Nextflow pipeline that takes paired-end Illumina reads from Atrandi combinator
 
 This is the archival pipeline for the paper *"Single-particle genomics uncovers abundant non-canonical marine viruses from nanolitre volumes."*
 
-Built for the GORG-Dark project (single-cell genomics of deep-ocean prokaryotes), but the decontamination steps are general-purpose against any BWA/BLAST-indexable reference.
-
 ## Databases you'll need
 
 Beyond the contaminant reference (auto-downloaded on first run, below), full functionality — annotation, taxonomic classification, and (optionally) viral classification — depends on several external reference databases you install yourself. None of these are redistributed by this repo.
