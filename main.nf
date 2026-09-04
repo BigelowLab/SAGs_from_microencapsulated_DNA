@@ -301,9 +301,9 @@ workflow {
     CH_count_gtdbtk = PARSE_GTDBTK.out.collectFile(name: '12_gtdbtk_stats.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false, sort: false)
 
     // Alaina's viral vs. cellular predictor
-    //PROTEINS_VS_EGGNOG_5(PROKKA_v1_14_6.out.faa.filter({ it[1].size()>0 })) // ignore .faa containing no proteins
-    //EGGNOG_HITS_TO_CELL_OR_VIRUS(PROTEINS_VS_EGGNOG_5.out.filter({ it[1].size()>2350 })) // only keep outputs where hitsTXT file is over 13 lines long (<= 13 means no hits)
-    //LOG_CELL_OR_VIRUS(EGGNOG_HITS_TO_CELL_OR_VIRUS.out.countfile.collect())
+    PROTEINS_VS_EGGNOG_5(PROKKA_v1_14_6.out.faa.filter({ it[1].size()>0 })) // ignore .faa containing no proteins
+    EGGNOG_HITS_TO_CELL_OR_VIRUS(PROTEINS_VS_EGGNOG_5.out.filter({ it[1].size()>2350 })) // only keep outputs where hitsTXT file is over 13 lines long (<= 13 means no hits)
+    CH_count_cell_or_virus = EGGNOG_HITS_TO_CELL_OR_VIRUS.out.countfile.collectFile(name: '13_cell_or_virus_stats.csv', storeDir: CH_stepwise_counts, seed: COUNT_HEADER, cache: false, sort: false)
 
     // Combine every stepwise count file into one, earliest stage first. Each one already
     // carries its own COUNT_HEADER line (from its own collectFile seed above) — strip
@@ -312,7 +312,7 @@ workflow {
         .concat(CH_count_trimmed_reads, CH_count_complex_reads, CH_count_normalized_reads,
                 CH_count_clean_reads, CH_count_raw_contigs, CH_count_trimmed_contigs,
                 CH_count_final_contigs, CH_count_sag_stats, CH_count_checkm,
-                CH_count_prokka, CH_count_ssu, CH_count_gtdbtk)
+                CH_count_prokka, CH_count_ssu, CH_count_gtdbtk, CH_count_cell_or_virus)
         .map { it.text.readLines().drop(1).join('\n') + '\n' }
         .collectFile(name: 'all_stepwise_counts.csv', storeDir: "${params.output}/sample_tracking", seed: COUNT_HEADER, cache: false, sort: false)
 
@@ -1073,7 +1073,7 @@ process ASSEMBLY_STATS_TABULATOR {
     PATH_out = "assembly_stats.csv"
     DF_log = pd.read_csv("${COUNTS_TXT}")
 
-    LIST_col_order = ["Sample_ID", "Raw_readcount", "Trimmed_readcount", "Complexity_filtered_readcount", "Normalized_readcount", "Contam_filtered_readcount", "Raw_contig_count", "Final_clean_contig_count", "Max_contig_length", "Final_assembly_length", "GC_content", "CheckM1_est_genome_completeness", "CDS", "tRNA", "percent_CDS_annotated", "average_CDS_length", "coding_density", "1_SSU_classification", "2_SSU_classification", "3_SSU_classification", "classification_via_GTDBTk", "multicopy_marker_genes"]
+    LIST_col_order = ["Sample_ID", "Raw_readcount", "Trimmed_readcount", "Complexity_filtered_readcount", "Normalized_readcount", "Contam_filtered_readcount", "Raw_contig_count", "Final_clean_contig_count", "Max_contig_length", "Final_assembly_length", "GC_content", "CheckM1_est_genome_completeness", "CDS", "tRNA", "percent_CDS_annotated", "average_CDS_length", "coding_density", "1_SSU_classification", "2_SSU_classification", "3_SSU_classification", "classification_via_GTDBTk", "multicopy_marker_genes", "Viral_besthits_(eggNOG)", "Bacterial_besthits_(eggNOG)", "Eukaryotic_besthits_(eggNOG)", "Archaeal_besthits_(eggNOG)"]
 
     print("Converting list of read/contig counts to table...")
     try:
@@ -1110,11 +1110,10 @@ process GENOMAD_v1_11_1 {
   script: "genomad end-to-end --cleanup --threads ${task.cpus} --full-ictv-lineage --splits 8 ${contigs} geNomad_${ID} ${params.DB_genomad_v1_11_1}" }
 
 process PROTEINS_VS_EGGNOG_5 {
-  // container='docker://quay.io/biocontainers/hmmer:3.3.2--h87f3376_2'
-  // installation notes: conda create --prefix /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/hmmer_3.4 -c conda-forge -c bioconda hmmer=3.4 pandas numpy gzip
-  beforeScript 'module load anaconda; source activate /mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/hmmer_3.4'
-  conda '/mnt/scgc/scgc_nfs/opt/common/anaconda3a/envs/hmmer_3.4'
-publishDir { "${params.output}/${ID}/annotation_${ID}/eggNOG_${ID}" }, mode: params.publishmode
+  // Script is just hmmsearch + gzip (no Python), so the plain HMMER biocontainer covers it —
+  // the older conda env (hmmer_3.4 + pandas/numpy) is no longer needed.
+  container 'quay.io/biocontainers/hmmer:3.4--h7d74f8d_5'
+  publishDir { "${params.output}/${ID}/annotation_${ID}/eggNOG_${ID}" }, mode: params.publishmode
   errorStrategy 'ignore'
   cpus 2 // 6
   memory "50.GB"
@@ -1221,12 +1220,6 @@ process EGGNOG_HITS_TO_CELL_OR_VIRUS {
     with open(PATH_out_countfile, 'w') as f:
         f.writelines([LINE1, LINE2, LINE3, LINE4])
     """ }
-
-process LOG_CELL_OR_VIRUS {
-    publishDir {"${params.output}/sample_tracking/3_assemblies"}, mode: "copy"; errorStrategy 'terminate'; queue "normal"
-    input: path(countfiles)
-    output: path("10_cell_or_virus_stats.csv")
-    shell: ''' echo "Metric,Count,Sample_ID" > 10_cell_or_virus_stats.csv; for LINE in !{countfiles}; do cat ${LINE} >> 10_cell_or_virus_stats.csv; done ''' }
 
 process VIRSORTER_v2_2_3 {
   errorStrategy 'ignore'

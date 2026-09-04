@@ -17,7 +17,7 @@ use of this pipeline's containers or results — see the bolded license column
 and the "Summary of obligations" at the end.** In particular: **geNomad** and
 **DeepVirFinder** restrict *use* to academic / non-commercial contexts;
 **Pheniqs**'s repository license conflicts with its source-file headers; and
-**KMERNORM** could not be license-verified. Several images
+**KMERNORM** and the **eggNOG database** could not be license-verified. Several images
 (`jiarong/virsorter:latest`, `replikation/deepvirfinder:latest`,
 `brwnj/kmernorm:v1.0.0`) use unpinned `:latest`-style tags and are not
 reproducible by version.
@@ -67,10 +67,12 @@ by this pipeline — their own terms still apply and are noted where relevant.
 | Tool | Version | License | Notes |
 |---|---|---|---|
 | [Prokka](https://github.com/tseemann/prokka) | 1.14.6 | GPL-3.0-only | `PROKKA_v1_14_6`. At runtime invokes several separately-licensed components (BLAST+, HMMER, Aragorn, Barrnap, Infernal, MinCED, Prodigal, tbl2asn) as external binaries within its container — see Prokka's own `doc/LICENSE.*` files. `--proteins` points at a user-supplied SwissProt FASTA (UniProt; CC BY 4.0), not redistributed here. |
-| [pandas](https://pandas.pydata.org/) | 2.2.1 (1.5.2 in the `PROKKA_GFF_2_TSV` mulled image) | BSD-3-Clause | `ASSEMBLY_STATS_TABULATOR`, the Pheniqs helper scripts, `PROKKA_GFF_2_TSV`, `PARSE_CLASSIFIER`, `PARSE_GTDBTK`. |
+| [pandas](https://pandas.pydata.org/) | 2.2.1 (1.5.2 in the `PROKKA_GFF_2_TSV` mulled image) | BSD-3-Clause | `ASSEMBLY_STATS_TABULATOR`, the Pheniqs helper scripts, `PROKKA_GFF_2_TSV`, `PARSE_CLASSIFIER`, `PARSE_GTDBTK`, `EGGNOG_HITS_TO_CELL_OR_VIRUS`. |
 | [NumPy](https://numpy.org/) | — | BSD-3-Clause | Bundled with pandas / matplotlib in the images above. |
 | [GTDB-Tk](https://github.com/Ecogenomics/GTDBTk) | 2.0.0 | GPL-3.0-or-later | `GTDBTK_v2_0_0` (`classify_wf`). Pinned to 2.0.0 (with GTDB reference data **release 207**) for fidelity to the published results, not because it is current. GTDB reference data is released under CC BY-SA 4.0 and is user-supplied, not redistributed here. |
 | [SILVA rRNA database](https://www.arb-silva.de/) / CREST | `silvamod` (v128-era) | SILVA: CC BY 4.0. CREST (Lanzén et al.): GPL-3.0 | User-supplied SILVA BLAST DB + `.map` / `.tree`, not redistributed by this pipeline. The lowest-common-ancestor logic in `templates/ssu_classifier.py` is derived from CREST (Lanzén A. *et al.*, 2012). |
+| [HMMER](https://github.com/EddyRivasLab/hmmer) | 3.4 | BSD-3-Clause | `PROTEINS_VS_EGGNOG_5` (`hmmsearch -E 0.00001` of each capsule's Prokka-predicted proteins against a user-supplied eggNOG HMM database). Distinct from the HMMER 3.3.2 that Prokka bundles internally, above. |
+| eggNOG HMM database + annotation table | (unspecified build; locally modified `nog_annotation_virupdated.tsv`) | **Unverified** | `params.PATH_hmm` / `params.PATH_annot`, consumed by `PROTEINS_VS_EGGNOG_5` / `EGGNOG_HITS_TO_CELL_OR_VIRUS`. eggNOG's publications are CC BY, but no explicit reuse license has been identified for the redistributable database files themselves, and the annotation TSV here has been locally edited ("virupdated"). User-supplied, not redistributed by this pipeline — confirm terms with the [eggNOG project](http://eggnog.embl.de) before redistributing results derived from it at scale. |
 
 ## Viral classification (`--viral`, default on)
 
@@ -82,9 +84,7 @@ by this pipeline — their own terms still apply and are noted where relevant.
 | [DeepVirFinder](https://github.com/jessieren/DeepVirFinder) | unpinned (`replikation/deepvirfinder:latest`) | **USC-RL v1.0 — academic / non-commercial only** | `DEEPVIRFINDER` (`dvf.py`). Commercial use requires a separate paid license from the University of Southern California. Upstream ships no official container and has no numbered releases since ~2019, so the version cannot be pinned; this pipeline uses `replikation/deepvirfinder:latest`, a community image whose Dockerfile traces to the peer-reviewed "What the Phage" pipeline (`replikation/What_the_Phage`). |
 
 Not used in the live workflow (defined but commented out, so not listed above):
-the eggNOG-based `PROTEINS_VS_EGGNOG_5` / `EGGNOG_HITS_TO_CELL_OR_VIRUS` block
-(HMMER 3.3.2, an eggNOG HMM database) and `PARSE_GENOMAD` /
-`PARSE_DEEPVIRFINDER_AND_VIRSORTER`.
+`PARSE_GENOMAD` / `PARSE_DEEPVIRFINDER_AND_VIRSORTER`.
 
 ## Summary of obligations
 
@@ -112,6 +112,10 @@ the eggNOG-based `PROTEINS_VS_EGGNOG_5` / `EGGNOG_HITS_TO_CELL_OR_VIRUS` block
   independently confirmed. Unpinned `:latest`-style container tags
   (`jiarong/virsorter`, `replikation/deepvirfinder`, `brwnj/kmernorm`) also mean
   those steps are not reproducible by version.
+- The **eggNOG HMM database / annotation table** (`params.PATH_hmm`,
+  `params.PATH_annot`) is likewise unverified for reuse terms — eggNOG's
+  publications are CC BY, but no explicit license covers the raw database
+  files, and the annotation table here has been locally modified.
 - Reference **databases** (the Zenodo contaminant set, SILVA, GTDB, the Prokka
   SwissProt FASTA, and the geNomad / CheckV databases) are user-supplied and not
   redistributed by this repository; their own terms (SILVA CC BY 4.0, GTDB
