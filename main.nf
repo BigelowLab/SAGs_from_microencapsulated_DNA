@@ -373,7 +373,15 @@ process PHENIQS_MAKE_SAMPLE_CONFIG {
 
 process PHENIQS_SAMPLE_DEMULTIPLEX {
     tag "${library} demultiplexing read subset to evaluate barcode frequencies"
-    container 'quay.io/biocontainers/pheniqs:2.1.0--py39ha79081e_6'
+    // Pheniqs (biosails/pheniqs) carries a repository LICENSE (a restrictive NYU research
+    // license — internal/non-commercial only, no redistribution/modification/sublicensing
+    // without a signed agreement) that conflicts with the AGPL-3.0-or-later headers on its own
+    // source files. This pipeline does not bundle or reference any Pheniqs container as a
+    // result. Installing pheniqs (or equivalent) on PATH, and pointing your own
+    // nextflow.config at it (e.g. a per-process `module`/`beforeScript`), is the user's own
+    // responsibility — entirely at your discretion; this pipeline doesn't warrant or vouch for
+    // it. See THIRD_PARTY_LICENSES.md / TODO.md.
+    container null
     input: tuple val(library), path(sample_fastq), path(sample_config)
     output: tuple val(library), path("2_sample_demux.bam")
     shell:
@@ -434,7 +442,9 @@ process PHENIQS_DEMULTIPLEX {
     maxForks 1 // keeps memory-heavy retries from stacking across libraries regardless of environment
     errorStrategy 'finish' //{ task.exitStatus in [137, 140] ? 'retry' : 'terminate' }
     maxRetries 2
-    container 'quay.io/biocontainers/pheniqs:2.1.0--py39ha79081e_6'
+    // See PHENIQS_SAMPLE_DEMULTIPLEX above: Pheniqs's license conflict means this pipeline
+    // does not bundle or reference a container for it; user-provided, at their own discretion.
+    container null
     publishDir { "${params.output}/sample_tracking/atrandi_demux/${library}" }, pattern: "*.json", mode: params.publishmode
     input: tuple val(library), path(split_config), path(r1), path(r2)
     output:

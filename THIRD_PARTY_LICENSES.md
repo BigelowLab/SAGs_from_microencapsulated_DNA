@@ -16,11 +16,13 @@ must be preserved and included in the distributed image/artifact.
 use of this pipeline's containers or results — see the bolded license column
 and the "Summary of obligations" at the end.** In particular: **geNomad** and
 **DeepVirFinder** restrict *use* to academic / non-commercial contexts;
-**Pheniqs**'s repository license conflicts with its source-file headers; and
-**KMERNORM** and the **eggNOG database** could not be license-verified. Several images
-(`jiarong/virsorter:latest`, `replikation/deepvirfinder:latest`,
-`brwnj/kmernorm:v1.0.0`) use unpinned `:latest`-style tags and are not
-reproducible by version.
+**Pheniqs**'s repository license conflicts with its source-file headers, so
+(like **KMERNORM** and the **eggNOG database**, which could not be
+license-verified at all) this pipeline does not bundle or reference any
+container for it — installing and running it is left entirely to the user, at
+their own discretion and risk (see `README.md` "Installing Pheniqs"). Several
+remaining images (`jiarong/virsorter:latest`, `replikation/deepvirfinder:latest`)
+use unpinned `:latest`-style tags and are not reproducible by version.
 
 Versions are taken from each process's `container` tag in `main.nf` (some also
 encoded in the process name). Reference *databases* (the contaminant reference,
@@ -32,7 +34,7 @@ by this pipeline — their own terms still apply and are noted where relevant.
 | Tool | Version | License | Notes |
 |---|---|---|---|
 | [seqtk](https://github.com/lh3/seqtk) | 1.2 | MIT | `SAMPLE_READS` — subsamples R2 to estimate Atrandi barcode frequencies. |
-| [Pheniqs](https://github.com/biosails/pheniqs) | 2.1.0 | **Conflicting — resolve before redistributing the container** | Individual source files carry AGPL-3.0-or-later headers, but the repository's top-level `LICENSE` states a separate, more restrictive NYU research license (internal, non-commercial use only; no redistribution/modification/sublicensing without a signed agreement). Run here only as an external containerized program, not linked into pipeline code — but the header/`LICENSE` conflict should be resolved with the authors before distributing the image itself. Used by `PHENIQS_SAMPLE_DEMULTIPLEX` / `PHENIQS_DEMULTIPLEX` for combinatorial-barcode demultiplexing. |
+| [Pheniqs](https://github.com/biosails/pheniqs) | 2.1.0 | **Conflicting** | Individual source files carry AGPL-3.0-or-later headers, but the repository's top-level `LICENSE` states a separate, more restrictive NYU research license (internal, non-commercial use only; no redistribution/modification/sublicensing without a signed agreement). `PHENIQS_SAMPLE_DEMULTIPLEX` / `PHENIQS_DEMULTIPLEX` (the two steps that invoke `pheniqs mux`) declare `container null` as a result — this pipeline does not bundle or reference any Pheniqs container (previously `quay.io/biocontainers/pheniqs:2.1.0--py39ha79081e_6`, a Bioconda-built image, itself built from this same source). The intent (see the process comments and `README.md` "Installing Pheniqs") is for the user to install and provide their own `pheniqs` binary on `PATH`; installing/running it is entirely **at the user's discretion and risk**, and this pipeline does not warrant or vouch for it. |
 | [matplotlib](https://matplotlib.org/) | (biocontainers mulled image) | Matplotlib License (BSD-style, PSF-derived) | `PHENIQS_PLOT_HIST` — the observed-barcode-distribution histogram. The image also bundles NumPy (BSD-3-Clause) and DejaVu fonts (permissive Bitstream Vera / public-domain additions). |
 | [samtools](https://github.com/samtools/samtools) / [htslib](https://github.com/samtools/htslib) | 1.24 | MIT/Expat (samtools); MIT + modified-BSD (htslib) | `PHENIQS_COUNT_SORT_SAMPLE` (tally observed barcodes) and `CONTAM_READ_REPORTER` (`samtools view -F0x0004`). |
 | [Trim Galore](https://github.com/FelixKrueger/TrimGalore) | 0.6.7 | GPL-3.0-or-later | `TRIM_BARCODE` — trims the Atrandi barcode + linker bases off the front of R2 after demux. Wraps **Cutadapt** (MIT-licensed) and FastQC internally. |
@@ -101,14 +103,15 @@ by this pipeline — their own terms still apply and are noted where relevant.
   distributing its results, in any commercial setting. (Both are in the
   `--viral` block, which is on by default — set `--viral false` to skip them.)
 - **Pheniqs** carries a repository `LICENSE` (restrictive NYU research license)
-  that conflicts with its per-file AGPL-3.0-or-later headers. Running it as an
-  external containerized program is low-risk, but resolve the conflict with the
-  authors before redistributing the Pheniqs image itself.
+  that conflicts with its per-file AGPL-3.0-or-later headers, so this pipeline
+  does not bundle or reference any Pheniqs container — downloading, installing,
+  and running it is left entirely to the user's own discretion and risk (same
+  treatment as KMERNORM, below).
 - **KMERNORM (as actually installed here)** could not be license-verified as of
   this writing — treat its use as at the user's own discretion and risk until
   independently confirmed. Unpinned `:latest`-style container tags
-  (`jiarong/virsorter`, `replikation/deepvirfinder`, `brwnj/kmernorm`) also mean
-  those steps are not reproducible by version.
+  (`jiarong/virsorter`, `replikation/deepvirfinder`) also mean those steps are
+  not reproducible by version.
 - The **eggNOG HMM database / annotation table** (`params.PATH_hmm`,
   `params.PATH_annot`) is likewise unverified for reuse terms — eggNOG's
   publications are CC BY, but no explicit license covers the raw database

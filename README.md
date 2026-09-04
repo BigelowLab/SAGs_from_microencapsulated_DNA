@@ -26,9 +26,10 @@ See [Reference data](#reference-data) below for how to point the pipeline's para
 ## Requirements
 
 - [Nextflow](https://www.nextflow.io/) (DSL2)
-- [Docker](https://www.docker.com/), running locally — every process except `KMERNORM_v1_0_0` executes in its own container, no local tool installation needed
+- [Docker](https://www.docker.com/), running locally — every process except `KMERNORM_v1_0_0`, `PHENIQS_SAMPLE_DEMULTIPLEX`, and `PHENIQS_DEMULTIPLEX` executes in its own container, no local tool installation needed
 - Java (required by Nextflow itself)
 - `kmernorm` on `PATH` — see [Installing kmernorm](#installing-kmernorm) below. Not bundled in a container; you provide your own build.
+- `pheniqs` on `PATH` — see [Installing Pheniqs](#installing-pheniqs) below. Not bundled in a container; you provide your own install.
 
 ## Quick start
 
@@ -160,3 +161,14 @@ cp kmernorm /opt/homebrew/bin/   # or anywhere else already on PATH
 Installing and running this source is entirely at your own discretion — confirm license terms and satisfy yourself of the tool's suitability independently; this pipeline doesn't warrant or vouch for it. See `THIRD_PARTY_LICENSES.md` for more.
 
 > **Warning — do not build kmernorm on macOS.** A macOS/ARM64 build of this exact source silently corrupts paired-end read ordering (verified: R1/R2 pairs get mismatched partway through real data, with no error at build or run time — it only surfaces later as a cryptic `bwa` "paired reads have different names" failure). The identical source built for Linux/x86_64 produces correctly paired output on the same data — this is specific to compiling on Mac. Build and run `kmernorm` on Linux until this is root-caused.
+
+## Installing Pheniqs
+
+`PHENIQS_SAMPLE_DEMULTIPLEX` and `PHENIQS_DEMULTIPLEX` (the two steps that actually invoke `pheniqs mux`) are the ones that do not run in a container. [Pheniqs](https://github.com/biosails/pheniqs)'s repository `LICENSE` is a restrictive NYU research license (internal/non-commercial use only; no redistribution, modification, or sublicensing without a signed agreement), which conflicts with the AGPL-3.0-or-later headers on its own source files — so this pipeline does not bundle it or depend on any third-party image wrapping it. You need to install your own copy on `PATH` before running the pipeline for real (`-stub-run` does not need it — see above).
+
+```bash
+conda install -c bioconda -c conda-forge pheniqs
+# or build from source: https://github.com/biosails/pheniqs
+```
+
+Downloading, installing, and running Pheniqs is entirely at your own discretion — confirm license terms and satisfy yourself of the tool's suitability independently; this pipeline doesn't warrant or vouch for it. See `THIRD_PARTY_LICENSES.md` for more.
