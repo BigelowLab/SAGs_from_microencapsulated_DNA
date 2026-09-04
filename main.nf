@@ -40,10 +40,12 @@ params.read_threshold = 3
 params.cell_threshold = 100000000000 // effectively uncapped
 params.barcode_trim_length = 45 // TRIM_BARCODE's trim_galore --clip_R2
 // Pheniqs' default is 2048 buffered records PER feed (input or output), so with one output
-// feed pair per capsule this scales directly with capsule count — with ~1900 real capsules in
-// one pool that's ~2000x the default's memory footprint. Turned down here since PHENIQS_DEMULTIPLEX
-// OOM'd against real data at the default; raise it again if throughput becomes the bottleneck instead.
-params.pheniqs_buffer_capacity = 64
+// feed pair per capsule this scales directly with capsule count — with ~2500 real capsules in
+// one pool a big buffer × ~5000 feeds is what OOM'd PHENIQS_DEMULTIPLEX at the 2048 default.
+// 64 avoided the OOM but made the step I/O-bound (constant tiny flushes into ~5000 gzip
+// streams — hours on a full ~600M-pair pool). 512 is the middle ground, paired with the
+// bumped memory/cpus on PHENIQS_DEMULTIPLEX below (~2.5 GB of buffers at 512 × 5000 feeds).
+params.pheniqs_buffer_capacity = 512
 
 //# READ PROCESSING
 params.phred = "33"
@@ -417,15 +419,13 @@ process PHENIQS_NAME_CAPSULES {
 
 process PHENIQS_DEMULTIPLEX {
     tag "${library} demultiplexing by combinatorial barcode"
-    // Retries with more memory instead of a fixed ceiling, same pattern as
-    // CONTAM_READ_FINDER/CHECKM_v1_1_9 below — but unlike those two, 4.GB isn't an
-    // empirically-observed OOM point, just a starting guess: this is the one process that
-    // reads a whole (un-subsampled) pool while writing one fastq.gz pair per capsule
-    // concurrently, so its footprint scales with both pool size and capsule count. Capped at
-    // 3 attempts (4/8/12GB) to stop at this machine's real 12GB Docker Desktop ceiling —
-    // retrying past that would just repeat the same OOM kill.
-    memory 12.GB
-    //memory { 4.GB * task.attempt }
+    // Reads a whole (un-subsampled) pool while writing one fastq.gz pair per capsule
+    // concurrently, so its footprint scales with both pool size and capsule count. On a full
+    // ~600M-pair pool with ~2500 capsules the old 12.GB / -B 64 / 1-thread config took hours
+    // (I/O-bound on tiny buffer flushes). Bumped: 24.GB + 8 threads, and params.pheniqs_buffer_capacity
+    // raised to 512 (see the note by that param) — ~2.5 GB of buffers, comfortably inside 24.
+    memory 24.GB
+    cpus 8
     maxForks 1 // keeps memory-heavy retries from stacking across libraries regardless of environment
     errorStrategy 'finish' //{ task.exitStatus in [137, 140] ? 'retry' : 'terminate' }
     maxRetries 2
