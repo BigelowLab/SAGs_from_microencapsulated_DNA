@@ -10,23 +10,7 @@ logic).
 
 If container images built from this repository bundle any of these tools'
 binaries or source, the original license and copyright notices for each tool
-must be preserved and included in the distributed image/artifact.
-
-**Several entries below need attention before any redistribution or commercial
-use of this pipeline's containers or results — see the bolded license column
-and the "Summary of obligations" at the end.** In particular: **geNomad** and
-**DeepVirFinder** restrict *use* to academic / non-commercial contexts — this
-is why `--viral` (the block containing both) now defaults to `false`; only set
-it `true` if your use qualifies. **Pheniqs**'s repository license conflicts
-with its source-file headers, so (like **KMERNORM** and the **eggNOG
-database**, which could not be license-verified at all) this pipeline does not
-bundle or reference any container for it — installing and running it is left
-entirely to the user, at their own discretion and risk (see `README.md`
-"Installing Pheniqs").
-
-Versions are taken from each process's `container` tag in `main.nf` (some also
-encoded in the process name). Reference *databases* (the contaminant reference,
-SILVA, GTDB, the Prokka SwissProt set) are user-supplied and not redistributed
+must be preserved and included in the distributed image/artifact. For example, the viral annotators **DeepVirFinder** and **GeNomad** are not licensed for commercial use. For that reason, the --viral mode of this pipeline is set to 'false' by default, and should only be activated by non-commercial users (e.g. academic researchers). This pipeline does not bundle or distribute these third party tools, which must be installed at the discretion of the user. Likewise, reference *databases* (the contaminant reference, SILVA, GTDB, the Prokka SwissProt set) are user-supplied and not redistributed
 by this pipeline — their own terms still apply and are noted where relevant.
 
 ## Read processing & demultiplexing
@@ -34,7 +18,7 @@ by this pipeline — their own terms still apply and are noted where relevant.
 | Tool | Version | License | Notes |
 |---|---|---|---|
 | [seqtk](https://github.com/lh3/seqtk) | 1.2 | MIT | `SAMPLE_READS` — subsamples R2 to estimate Atrandi barcode frequencies. |
-| [Pheniqs](https://github.com/biosails/pheniqs) | 2.1.0 | **Conflicting** | Individual source files carry AGPL-3.0-or-later headers, but the repository's top-level `LICENSE` states a separate, more restrictive NYU research license (internal, non-commercial use only; no redistribution/modification/sublicensing without a signed agreement). `PHENIQS_SAMPLE_DEMULTIPLEX` / `PHENIQS_DEMULTIPLEX` (the two steps that invoke `pheniqs mux`) declare `container null` as a result — this pipeline does not bundle or reference any Pheniqs container (previously `quay.io/biocontainers/pheniqs:2.1.0--py39ha79081e_6`, a Bioconda-built image, itself built from this same source). The intent (see the process comments and `README.md` "Installing Pheniqs") is for the user to install and provide their own `pheniqs` binary on `PATH`; installing/running it is entirely **at the user's discretion and risk**, and this pipeline does not warrant or vouch for it. |
+| [Pheniqs](https://github.com/biosails/pheniqs) | 2.1.0 | **Conflicting** | Individual source files carry AGPL-3.0-or-later headers, but the repository's top-level `LICENSE` states a separate, more restrictive NYU research license (internal, non-commercial use only; no redistribution/modification/sublicensing without a signed agreement). The intent (see the process comments and `README.md` "Installing Pheniqs") is for the user to install and provide their own `pheniqs` binary on `PATH`; installing/running it is entirely **at the user's discretion and risk**, and this pipeline does not warrant or vouch for it. |
 | [matplotlib](https://matplotlib.org/) | (biocontainers mulled image) | Matplotlib License (BSD-style, PSF-derived) | `PHENIQS_PLOT_HIST` — the observed-barcode-distribution histogram. The image also bundles NumPy (BSD-3-Clause) and DejaVu fonts (permissive Bitstream Vera / public-domain additions). |
 | [samtools](https://github.com/samtools/samtools) / [htslib](https://github.com/samtools/htslib) | 1.24 | MIT/Expat (samtools); MIT + modified-BSD (htslib) | `PHENIQS_COUNT_SORT_SAMPLE` (tally observed barcodes) and `CONTAM_READ_REPORTER` (`samtools view -F0x0004`). |
 | [Trim Galore](https://github.com/FelixKrueger/TrimGalore) | 0.6.7 | GPL-3.0-or-later | `TRIM_BARCODE` — trims the Atrandi barcode + linker bases off the front of R2 after demux. Wraps **Cutadapt** (MIT-licensed) and FastQC internally. |
@@ -74,7 +58,7 @@ by this pipeline — their own terms still apply and are noted where relevant.
 | [GTDB-Tk](https://github.com/Ecogenomics/GTDBTk) | 2.0.0 | GPL-3.0-or-later | `GTDBTK_v2_0_0` (`classify_wf`). Pinned to 2.0.0 (with GTDB reference data **release 207**) for fidelity to the published results, not because it is current. GTDB reference data is released under CC BY-SA 4.0 and is user-supplied, not redistributed here. |
 | [SILVA rRNA database](https://www.arb-silva.de/) / CREST | `silvamod` (v128-era) | SILVA: CC BY 4.0. CREST (Lanzén et al.): GPL-3.0 | User-supplied SILVA BLAST DB + `.map` / `.tree`, not redistributed by this pipeline. The lowest-common-ancestor logic in `templates/ssu_classifier.py` is derived from CREST (Lanzén A. *et al.*, 2012). |
 
-## Viral classification (`--viral`, default on)
+## Viral classification (`--viral`, default off)
 
 | Tool | Version | License | Notes |
 |---|---|---|---|
@@ -83,7 +67,6 @@ by this pipeline — their own terms still apply and are noted where relevant.
 | [CheckV](https://bitbucket.org/berkeleylab/checkv/) | 1.0.1 | BSD-3-Clause-LBNL | `CHECKV_v1_0_1` (`end_to_end`). Modified-BSD variant used by Lawrence Berkeley National Laboratory. `params`-referenced CheckV DB is user-supplied. |
 | [DeepVirFinder](https://github.com/jessieren/DeepVirFinder) | pinned by digest (`replikation/deepvirfinder@sha256:cc9666...`) | **USC-RL v1.0 — academic / non-commercial only** | `DEEPVIRFINDER` (`dvf.py`). Commercial use requires a separate paid license from the University of Southern California. Upstream ships no official container and has no numbered releases since ~2019 (the image content traces to upstream commit `475d883`, 2019-01-04). `replikation/deepvirfinder` has only ever published one tag (`:latest`, since 2019-05-13), so this pipeline pins its actual content digest instead of the mutable tag name — immutable even if that tag is ever reused. Image Dockerfile traces to the peer-reviewed "What the Phage" pipeline (`replikation/What_the_Phage`). |
 | [HMMER](https://github.com/EddyRivasLab/hmmer) | 3.4 | BSD-3-Clause | `PROTEINS_VS_EGGNOG_4dot5` (`hmmsearch -E 0.00001` of each capsule's Prokka-predicted proteins against a user-supplied eggNOG HMM database). Distinct from the HMMER 3.3.2 that Prokka bundles internally, above. |
-| eggNOG HMM database + annotation table | eggNOG 4.5 (locally modified `nog_annotation_virupdated.tsv`) | **Unverified** | `params.PATH_hmm` / `params.PATH_annot`, consumed by `PROTEINS_VS_EGGNOG_4dot5` / `EGGNOG_HITS_TO_CELL_OR_VIRUS`. eggNOG's publications are CC BY, but no explicit reuse license has been identified for the redistributable database files themselves, and the annotation TSV here has been locally edited ("virupdated"). User-supplied, not redistributed by this pipeline — confirm terms with the [eggNOG project](http://eggnog.embl.de) before redistributing results derived from it at scale. |
 
 ## Summary of obligations
 
@@ -108,13 +91,7 @@ by this pipeline — their own terms still apply and are noted where relevant.
   does not bundle or reference any Pheniqs container — downloading, installing,
   and running it is left entirely to the user's own discretion and risk (same
   treatment as KMERNORM, below).
-- **KMERNORM (as actually installed here)** could not be license-verified as of
-  this writing — treat its use as at the user's own discretion and risk until
-  independently confirmed.
-- The **eggNOG HMM database / annotation table** (`params.PATH_hmm`,
-  `params.PATH_annot`) is likewise unverified for reuse terms — eggNOG's
-  publications are CC BY, but no explicit license covers the raw database
-  files, and the annotation table here has been locally modified.
+- **KMERNORM** has no specified license, as of this writing — installation and use is at the user's own discretion.
 - Reference **databases** (the Zenodo contaminant set, SILVA, GTDB, the Prokka
   SwissProt FASTA, and the geNomad / CheckV databases) are user-supplied and not
   redistributed by this repository; their own terms (SILVA CC BY 4.0, GTDB
